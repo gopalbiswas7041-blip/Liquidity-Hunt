@@ -1,0 +1,5 @@
+print("====================================")
+print("   Liquidity Hunter AI v1 Started")
+print("====================================")
+print("Welcome Gopal!")
+print("Smart Money Concept Trading App")
