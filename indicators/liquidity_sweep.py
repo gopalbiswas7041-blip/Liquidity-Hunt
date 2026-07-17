@@ -2,6 +2,39 @@ class LiquiditySweep:
 
     def _init_(self):
         print("Liquidity Sweep Engine Initialized")
+        
+    def find_swings(self, data):
+        """
+        Detect Swing Highs and Swing Lows
+        """
+
+        swing_highs = []
+        swing_lows = []
+
+        highs = data["High"].values
+        lows = data["Low"].values
+
+        for i in range(2, len(data) - 2):
+
+            # Swing High
+            if (
+                highs[i] > highs[i - 1]
+                and highs[i] > highs[i - 2]
+                and highs[i] > highs[i + 1]
+                and highs[i] > highs[i + 2]
+            ):
+                swing_highs.append((i, float(highs[i])))
+
+            # Swing Low
+            if (
+                lows[i] < lows[i - 1]
+                and lows[i] < lows[i - 2]
+                and lows[i] < lows[i + 1]
+                and lows[i] < lows[i + 2]
+            ):
+                swing_lows.append((i, float(lows[i])))
+
+        return swing_highs, swing_lows
 
     def detect(self, data):
 
