@@ -1,4 +1,5 @@
 from indicators.liquidity_sweep_v2 import LiquiditySweepV2
+from indicators.atr import ATR
 
 
 class TradeManager:
@@ -8,6 +9,7 @@ class TradeManager:
         print("Trade Manager Initialized")
 
         self.swing_engine = LiquiditySweepV2()
+        self.atr = ATR()
 
         self.sl_mode = "NORMAL"
 
@@ -51,11 +53,43 @@ class TradeManager:
         print("Generating Trade Plan...")
 
         # -----------------------------
+        # Market Volatility
+        # -----------------------------
+        volatility = self.atr.get_volatility(data)
+
+        print(f"Market Volatility : {volatility}")
+
+        # -----------------------------
         # Reset AI State
         # -----------------------------
         self.trade_score = 0
         self.trade_reason = []
         self.trade_status = "WAIT"
+
+        # -----------------------------
+        # Volatility AI Logic
+        # -----------------------------
+        if volatility == "LOW":
+
+            self.trade_score -= 5
+
+            self.trade_reason.append(
+             "Low Volatility Market"
+            )
+
+        elif volatility == "HIGH":
+
+            self.trade_score += 10
+
+            self.trade_reason.append(
+                "High Volatility Market"
+            )
+
+        else:
+
+            self.trade_reason.append(
+                "Normal Volatility"
+            )
 
         trade = {
 
@@ -63,6 +97,7 @@ class TradeManager:
             "confidence": signal["confidence"],
             "quality": signal["quality"],
             "status": signal["status"],
+            "volatility": volatility,
 
             "entry": None,
             "stop_loss": None,

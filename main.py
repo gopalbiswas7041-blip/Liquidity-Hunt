@@ -1,22 +1,61 @@
 from data.market_data import MarketData
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
+from indicators.atr import ATR
 
 print("=" * 50)
-print("      LIQUIDITY HUNTER AI V10.4")
+print("      LIQUIDITY HUNTER AI V12")
 print("=" * 50)
 
-# Load Market Data
-market = MarketData("^NSEI", "5m")
-data = market.load_data()
+# -----------------------------------
+# Market Data Engine
+# -----------------------------------
 
-# Generate Trading Signal
+market = MarketData("^NSEI")
+
+print("\n========== LOADING 5 MIN DATA ==========")
+data_5m = market.load_data("5m")
+
+print("\n========== LOADING 15 MIN DATA ==========")
+data_15m = market.load_data("15m")
+
+# -----------------------------------
+# ATR (5m)
+# -----------------------------------
+
+atr = ATR()
+
+atr_data = atr.calculate(data_5m)
+volatility = atr.get_volatility(data_5m)
+
+print("\n========== ATR ==========")
+print(atr_data[["Close", "ATR"]].tail())
+
+print("\n========== MARKET VOLATILITY ==========")
+print(f"Market Volatility : {volatility}")
+
+# -----------------------------------
+# Signal Engine
+# -----------------------------------
+
 engine = SignalEngine()
-result = engine.generate_signal(data)
 
-# Generate Trade Plan
+# এখন 5m এবং 15m দুটোই পাঠানো হচ্ছে
+result = engine.generate_signal(
+    data_5m,
+    data_15m
+)
+
+# -----------------------------------
+# Trade Manager
+# -----------------------------------
+
 trade_manager = TradeManager()
-trade = trade_manager.generate_trade(result, data)
+trade = trade_manager.generate_trade(result, data_5m)
+
+# -----------------------------------
+# Final Signal
+# -----------------------------------
 
 print("\n========== FINAL SIGNAL ==========")
 
@@ -33,7 +72,13 @@ if result["reasons"]:
 else:
     print("  None")
 
+# -----------------------------------
+# Trade Plan
+# -----------------------------------
+
 print("\n========== TRADE PLAN ==========")
+
+print(f"Volatility : {trade['volatility']}")
 
 if trade["entry"] is not None:
     print(f"Entry Price : {trade['entry']:.2f}")
@@ -66,5 +111,5 @@ else:
     print("Risk Reward : None")
 
 print("=" * 50)
-print("V10.4 RUN COMPLETED")
+print("V12 RUN COMPLETED")
 print("=" * 50)
