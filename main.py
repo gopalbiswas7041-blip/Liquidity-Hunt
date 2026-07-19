@@ -2,7 +2,6 @@ from data.market_data import MarketData
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
 from indicators.atr import ATR
-from backtest.backtest_engine import BacktestEngine
 
 print("=" * 50)
 print("      LIQUIDITY HUNTER AI V12")
@@ -21,7 +20,7 @@ print("\n========== LOADING 15 MIN DATA ==========")
 data_15m = market.load_data("15m")
 
 # -----------------------------------
-# ATR (5m)
+# ATR Engine
 # -----------------------------------
 
 atr = ATR()
@@ -41,7 +40,6 @@ print(f"Market Volatility : {volatility}")
 
 engine = SignalEngine()
 
-# এখন 5m এবং 15m দুটোই পাঠানো হচ্ছে
 result = engine.generate_signal(
     data_5m,
     data_15m
@@ -52,7 +50,11 @@ result = engine.generate_signal(
 # -----------------------------------
 
 trade_manager = TradeManager()
-trade = trade_manager.generate_trade(result, data_5m)
+
+trade = trade_manager.generate_trade(
+    result,
+    data_5m
+)
 
 # -----------------------------------
 # Final Signal
@@ -112,5 +114,5 @@ else:
     print("Risk Reward : None")
 
 print("=" * 50)
-print("V12 RUN COMPLETED")
+print("LIVE SIGNAL MODE READY")
 print("=" * 50)

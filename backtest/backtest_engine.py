@@ -19,6 +19,8 @@ class BacktestEngine:
 
         print("Starting Backtest...")
 
+        results = []
+
         signal = self.signal_engine.generate_signal(
             data_5m,
             data_15m
@@ -29,4 +31,8 @@ class BacktestEngine:
             data_5m
         )
 
-        return trade
+        results.append(trade)
+
+        print(f"Trades Processed : {len(results)}")
+
+        return results
