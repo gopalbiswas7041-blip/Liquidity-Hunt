@@ -9,7 +9,8 @@ class ConfluenceEngine:
         structure,
         choch,
         order_blocks,
-        fvg
+        fvg,
+        trend
     ):
 
         print("Checking Smart Money Confluence...")
@@ -20,7 +21,8 @@ class ConfluenceEngine:
             "confidence": 0,
             "quality": "C",
             "status": "AVOID",
-            "reasons": []
+            "reasons": [],
+            "scorecard": {}
         }
 
         bullish_score = 0
@@ -126,12 +128,85 @@ class ConfluenceEngine:
                 break
 
         # -------------------------
+        # Trend Alignment (V13)
+        # -------------------------
+
+        if trend:
+
+            trend_direction = trend.get("trend", "NONE")
+            trend_strength = trend.get("strength", "WEAK")
+
+            if (
+                direction == "Bullish"
+                and trend_direction == "BUY"
+            ):
+
+                bullish_score += 15
+                result["reasons"].append(
+                    "15m Bullish Trend Alignment"
+                )
+
+                if trend_strength == "STRONG":
+                    bullish_score += 10
+                    result["reasons"].append(
+                        "Strong Trend Bonus (+10)"
+                    )
+
+                elif trend_strength == "MODERATE":
+                    bullish_score += 5
+                    result["reasons"].append(
+                        "Moderate Trend Bonus (+5)" 
+                    )
+
+            elif (
+                direction == "Bearish"
+                and trend_direction == "SELL"
+            ):
+
+                bearish_score += 15
+                result["reasons"].append(
+                    "15m Bearish Trend Alignment"
+                )
+
+                if trend_strength == "STRONG":
+                    bearish_score += 10
+                    result["reasons"].append(
+                        "Strong Trend Bonus (+10)"
+                    )
+
+                elif trend_strength == "MODERATE":
+                    bearish_score += 5
+                    result["reasons"].append(
+                        "Moderate Trend Bonus (+5)"
+                    )
+
+            else:
+
+                if direction == "Bullish":
+                    bullish_score -= 20
+                else:
+                    bearish_score -= 20
+
+                result["reasons"].append(
+                    "Trend Conflict (-20)"
+                )
+
+        # -------------------------
         # Final Score
         # -------------------------
 
-        confidence = max(
-            bullish_score,
-            bearish_score
+        result["scorecard"] = {
+            "bullish_score": bullish_score,
+            "bearish_score": bearish_score
+        }
+
+        confidence = min(
+            100,
+            max(
+                0,
+                bullish_score,
+                bearish_score
+            )
         )
 
         result["confidence"] = confidence

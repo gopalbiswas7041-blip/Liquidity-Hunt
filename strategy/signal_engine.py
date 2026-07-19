@@ -65,7 +65,8 @@ class SignalEngine:
             structure,
             choch,
             order_blocks,
-            fvg
+            fvg,
+            trend
         )
 
         signal = {
@@ -95,12 +96,22 @@ class SignalEngine:
         print("Direction :", mtf["direction"])
         print("Reason    :", mtf["reason"])
 
-        # Final Status
-        signal["status"] = mtf["status"]
+        # -------------------------
+        # Final Decision
+        # -------------------------
 
-        if mtf["status"] == "READY":
-            signal["signal"] = mtf["direction"]
+        if confluence["status"] == "AVOID":
+
+            signal["status"] = "AVOID"
+            signal["signal"] = "NO TRADE"
+
         else:
-            signal["signal"] = "NO TRADE"   
+
+            signal["status"] = mtf["status"]
+
+            if mtf["status"] == "READY":
+                signal["signal"] = mtf["direction"]
+            else:
+                signal["signal"] = "NO TRADE"   
 
         return signal
