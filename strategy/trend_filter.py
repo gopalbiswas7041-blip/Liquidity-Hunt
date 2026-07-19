@@ -19,6 +19,10 @@ class TrendFilter:
         result = {
             "trend": "NONE",
             "status": "SIDEWAYS",
+            "strength": "WEAK",
+            "score": 0,
+            "bullish": 0,
+            "bearish": 0,
             "reason": ""
         }
 
@@ -59,6 +63,19 @@ class TrendFilter:
                 bearish += 3
 
         score = bullish - bearish
+
+        result["bullish"] = bullish
+        result["bearish"] = bearish
+        result["score"] = score
+
+        if abs(score) >= 10:
+            result["strength"] = "STRONG"
+
+        elif abs(score) >= 6:
+            result["strength"] = "MODERATE"
+
+        else:
+            result["strength"] = "WEAK"
 
         if score >= 5:
 

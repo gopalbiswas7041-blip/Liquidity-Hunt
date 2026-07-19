@@ -98,7 +98,9 @@ class SignalEngine:
         # Final Status
         signal["status"] = mtf["status"]
 
-        if mtf["direction"] != "NONE":
+        if mtf["status"] == "READY":
             signal["signal"] = mtf["direction"]
+        else:
+            signal["signal"] = "NO TRADE"   
 
         return signal

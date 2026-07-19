@@ -53,6 +53,34 @@ class TradeManager:
         print("Generating Trade Plan...")
 
         # -----------------------------
+        # Signal Status Validation
+        # -----------------------------
+        if signal["status"] != "READY":
+
+            print("Trade Blocked :", signal["status"])
+
+            return {
+                "signal": signal["signal"],
+                "confidence": signal["confidence"],
+                "quality": signal["quality"],
+                "status": signal["status"],
+                "volatility": "UNKNOWN",
+
+                "entry": None,
+                "stop_loss": None,
+                "take_profit": None,
+
+                "risk": None,
+                "reward": None,
+                "risk_reward": None,
+
+                "trade_score": 0,
+                "trade_status": "WAIT",
+                "trade_reason": [
+                    f"Signal Status = {signal['status']}"
+                ]
+            }
+        # -----------------------------
         # Market Volatility
         # -----------------------------
         volatility = self.atr.get_volatility(data)
