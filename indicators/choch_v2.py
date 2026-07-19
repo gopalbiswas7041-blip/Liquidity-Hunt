@@ -89,6 +89,22 @@ class CHoCHV2:
         return "D"
 
     # --------------------------------------------------
+    # Internal CHoCH Evaluation
+    # --------------------------------------------------
+
+    def _evaluate(
+        self,
+        df,
+        market_structure,
+        liquidity_sweeps
+    ):
+        """
+        Internal evaluation method.
+        This will become the single source of truth
+        for both detect() and detect_legacy().
+        """
+
+    # --------------------------------------------------
     # Main Detection Method
     # --------------------------------------------------
 
@@ -272,3 +288,47 @@ class CHoCHV2:
             print("No Confirmed CHoCH Found")
 
         return result
+
+    # --------------------------------------------------
+    # Compatibility Method for Confluence / TrendFilter
+    # --------------------------------------------------
+
+    def detect_for_confluence(
+        self,
+        df,
+        choch_result=None,
+        market_structure=None,
+        liquidity_sweeps=None
+    ):
+        """
+        Returns legacy-style CHoCH list for compatibility
+        with ConfluenceEngine and TrendFilter.
+        """
+
+        if choch_result is None:
+            result = self.detect(
+                df,
+                market_structure,
+                liquidity_sweeps
+            )
+        else:
+
+            result = choch_result
+
+        if not result["choch"]:
+            return []
+
+        latest = df.iloc[-1]
+
+        direction = (
+            "Bullish CHoCH"
+            if result["direction"] == "BUY"
+            else "Bearish CHoCH"
+        )
+
+        return [{
+            "type": direction,
+            "price": latest["Close"],
+            "index": len(df) - 1,
+            "time": latest.name
+        }]

@@ -48,8 +48,14 @@ class SignalEngine:
             structure,
             liquidity
         )
-        # Temporary compatibility with ConfluenceEngine
-        choch = []
+        
+        # Compatibility Output for ConfluenceEngine
+        choch = self.choch.detect_for_confluence(
+            data_5m,
+            choch_result,
+            structure,
+            liquidity
+        )
 
         order_blocks = self.order_block.detect(data_5m)
         fvg = self.fvg.detect(data_5m)
