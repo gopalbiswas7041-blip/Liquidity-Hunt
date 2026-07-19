@@ -3,6 +3,15 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QFormLayout, QGroupBox
 )
 
+from ui.styles import (
+    BUY_COLOR,
+    SELL_COLOR,
+    WAIT_COLOR,
+    READY_COLOR,
+    AVOID_COLOR,
+    TEXT_COLOR
+)
+
 
 class DashboardWidget(QWidget):
     """
@@ -69,3 +78,45 @@ class DashboardWidget(QWidget):
             self.trade_reason.setText(", ".join(map(str, reasons)) if reasons else "-")
         else:
             self.trade_reason.setText(str(reasons))
+
+        # -----------------------------
+        # Signal Color
+        # -----------------------------
+
+        signal = str(data.get("signal", "NO TRADE")).upper()
+
+        if signal == "BUY":
+            self.signal.setStyleSheet(
+                f"color:{BUY_COLOR}; font-weight:bold; font-size:16px;"
+            )
+
+        elif signal == "SELL":
+            self.signal.setStyleSheet(
+                f"color:{SELL_COLOR}; font-weight:bold; font-size:16px;"
+            )
+
+        else:
+            self.signal.setStyleSheet(
+                f"color:{WAIT_COLOR}; font-weight:bold; font-size:16px;"
+            )
+
+        # -----------------------------
+        # Status Color
+        # -----------------------------
+
+        status = str(data.get("trade_status", data.get("status", "WAIT"))).upper()
+
+        if status == "READY":
+            self.status.setStyleSheet(
+                f"color:{READY_COLOR}; font-weight:bold;"
+            )
+
+        elif status == "AVOID":
+            self.status.setStyleSheet(
+                f"color:{AVOID_COLOR}; font-weight:bold;"
+            )
+
+        else:
+            self.status.setStyleSheet(
+                f"color:{TEXT_COLOR}; font-weight:bold;"
+            )
