@@ -1,5 +1,5 @@
 from indicators.market_structure import MarketStructure
-from indicators.choch import CHoCH
+from indicators.choch_v2 import CHoCHV2
 
 
 class TrendFilter:
@@ -9,12 +9,12 @@ class TrendFilter:
         print("Trend Filter Engine Initialized")
 
         self.structure = MarketStructure()
-        self.choch = CHoCH()
+        self.choch = CHoCHV2()
 
-        # শুধু সাম্প্রতিক Structure বিশ্লেষণ করব
+        # Analyze Recent Market Structure Only
         self.lookback = 15
 
-    def analyze(self, data):
+    def analyze(self, data, choch_result=None):
 
         result = {
             "trend": "NONE",
@@ -27,7 +27,12 @@ class TrendFilter:
             return result
 
         structures = self.structure.detect(data)
-        chochs = self.choch.detect(data)
+
+        chochs = self.choch.detect_for_confluence(
+            data,
+            choch_result=choch_result,
+            market_structure=structures
+        )
 
         bullish = 0
         bearish = 0
@@ -40,6 +45,7 @@ class TrendFilter:
 
             if s["type"] == "Bullish BOS":
                 bullish += 2
+
             elif s["type"] == "Bearish BOS":
                 bearish += 2
 
@@ -48,6 +54,7 @@ class TrendFilter:
 
             if c["type"] == "Bullish CHoCH":
                 bullish += 3
+
             elif c["type"] == "Bearish CHoCH":
                 bearish += 3
 
