@@ -2,6 +2,7 @@ from data.market_data import MarketData
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
 from indicators.atr import ATR
+from backtest.backtest_engine import BacktestEngine
 
 print("=" * 50)
 print("      LIQUIDITY HUNTER AI V12")
