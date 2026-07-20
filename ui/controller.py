@@ -83,6 +83,12 @@ class Controller:
 
                 "trade_score": trade.get("trade_score", 0),
                 "trade_status": trade.get("trade_status", "WAIT"),
+
+                "entry_type": trade.get("entry_type", "--"),
+                "entry_zone": trade.get("entry_zone", "--"),
+                "confirmation": trade.get("confirmation", "--"),
+                "entry_quality": trade.get("entry_quality", "--"),
+
                 "trade_reason": trade.get("trade_reason", [])
 
             }
@@ -111,6 +117,12 @@ class Controller:
 
                 "trade_score": 0,
                 "trade_status": "ERROR",
+
+                "entry_type": "--",
+                "entry_zone": "--",
+                "confirmation": "--",
+                "entry_quality": "--",
+
                 "trade_reason": [str(e)]
 
             }

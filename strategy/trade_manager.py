@@ -1,5 +1,6 @@
 from indicators.liquidity_sweep_v2 import LiquiditySweepV2
 from indicators.atr import ATR
+from strategy.smart_entry import SmartEntryEngine
 
 
 class TradeManager:
@@ -10,6 +11,7 @@ class TradeManager:
 
         self.swing_engine = LiquiditySweepV2()
         self.atr = ATR()
+        self.smart_entry = SmartEntryEngine()
 
         self.sl_mode = "NORMAL"
 
@@ -137,7 +139,12 @@ class TradeManager:
 
             "trade_score": 0,
             "trade_status": "WAIT",
-            "trade_reason": []
+            "trade_reason": [],
+
+            "entry_type": "NONE",
+            "entry_zone": None,
+            "confirmation": "NONE",
+            "entry_quality": "C",
 
         }
 
@@ -403,6 +410,23 @@ class TradeManager:
         self.trade_score = trade["trade_score"]
         self.trade_status = trade["trade_status"]
         self.trade_reason = trade["trade_reason"]
+
+        # -----------------------------
+        # Smart Entry Engine
+        # -----------------------------
+        entry_info = self.smart_entry.analyze(
+            signal,
+            trade
+        )
+
+        trade["entry_type"] = entry_info["entry_type"]
+        trade["entry_zone"] = entry_info["entry_zone"]
+        trade["confirmation"] = entry_info["confirmation"]
+        trade["entry_quality"] = entry_info["entry_quality"]
+
+        trade["trade_reason"].append(
+            entry_info["reason"]
+        )
 
         return trade
 

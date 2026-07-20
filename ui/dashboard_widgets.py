@@ -40,6 +40,11 @@ class DashboardWidget(QWidget):
         self.trade_score = QLabel("0")
         self.trade_reason = QLabel("-")
 
+        self.entry_type = QLabel("--")
+        self.entry_zone = QLabel("--")
+        self.confirmation = QLabel("--")
+        self.entry_quality = QLabel("--")
+
         form.addRow("Signal", self.signal)
         form.addRow("Confidence", self.confidence)
         form.addRow("Quality", self.quality)
@@ -52,6 +57,10 @@ class DashboardWidget(QWidget):
         form.addRow("Risk : Reward", self.rr)
         form.addRow("Volatility", self.volatility)
         form.addRow("AI Score", self.trade_score)
+        form.addRow("Entry Type", self.entry_type)
+        form.addRow("Entry Zone", self.entry_zone)
+        form.addRow("Confirmation", self.confirmation)
+        form.addRow("Entry Quality", self.entry_quality)
         form.addRow("Reason", self.trade_reason)
 
         self.refresh_button = QPushButton("Refresh Signal")
@@ -72,6 +81,22 @@ class DashboardWidget(QWidget):
         self.rr.setText(str(data.get("risk_reward", "--")))
         self.volatility.setText(str(data.get("volatility", "NORMAL")))
         self.trade_score.setText(str(data.get("trade_score", "0")))
+        
+        self.entry_type.setText(
+        str(data.get("entry_type", "--"))
+        )
+
+        self.entry_zone.setText(
+            str(data.get("entry_zone", "--"))
+        )
+
+        self.confirmation.setText(
+            str(data.get("confirmation", "--"))
+        )
+
+        self.entry_quality.setText(
+            str(data.get("entry_quality", "--"))
+        )
 
         reasons = data.get("trade_reason", [])
         if isinstance(reasons, list):
