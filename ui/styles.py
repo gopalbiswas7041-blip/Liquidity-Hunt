@@ -1,54 +1,94 @@
 # ==========================================
-# Liquidity Hunter AI V13
-# styles.py
+# Liquidity Hunter AI V15.1
+# Professional Dark Theme
 # ==========================================
 
 APP_STYLE = """
-QMainWindow {
-    background-color: #121212;
+QMainWindow{
+    background-color:#0E1117;
 }
 
-QWidget {
-    background-color: #121212;
-    color: white;
-    font-family: Segoe UI;
-    font-size: 11pt;
+QWidget{
+    background-color:#0E1117;
+    color:#E6EDF3;
+    font-family:'Segoe UI';
+    font-size:11pt;
 }
 
-QLabel {
-    color: white;
+QLabel{
+    color:#E6EDF3;
+    background:transparent;
 }
 
-QGroupBox {
-    border: 2px solid #333333;
-    border-radius: 8px;
-    margin-top: 12px;
-    padding: 10px;
-    font-weight: bold;
-    color: white;
+QGroupBox{
+    background-color:#161B22;
+    border:1px solid #30363D;
+    border-radius:14px;
+    margin-top:16px;
+    padding:16px;
+    font-size:12pt;
+    font-weight:700;
+    color:#58A6FF;
 }
 
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 5px;
+QGroupBox::title{
+    subcontrol-origin:margin;
+    left:14px;
+    padding:0 8px;
 }
 
-QPushButton {
-    background-color: #00C853;
-    color: white;
-    border-radius: 8px;
-    padding: 8px;
-    font-size: 11pt;
-    font-weight: bold;
+QFrame{
+    background-color:#161B22;
+    border:1px solid #30363D;
+    border-radius:12px;
 }
 
-QPushButton:hover {
-    background-color: #00E676;
+QPushButton{
+    background-color:#238636;
+    color:white;
+    border:none;
+    border-radius:10px;
+    padding:10px;
+    font-size:11pt;
+    font-weight:bold;
 }
 
-QPushButton:pressed {
-    background-color: #00A843;
+QPushButton:hover{
+    background-color:#2EA043;
+}
+
+QPushButton:pressed{
+    background-color:#1F6F2C;
+}
+
+QLineEdit,
+QTextEdit,
+QPlainTextEdit{
+    background:#0D1117;
+    color:#E6EDF3;
+    border:1px solid #30363D;
+    border-radius:8px;
+    padding:6px;
+}
+
+QScrollArea{
+    border:none;
+    background:#0E1117;
+}
+
+QScrollBar:vertical{
+    background:#161B22;
+    width:10px;
+    border:none;
+}
+
+QScrollBar::handle:vertical{
+    background:#30363D;
+    border-radius:5px;
+}
+
+QScrollBar::handle:vertical:hover{
+    background:#484F58;
 }
 """
 
@@ -59,7 +99,8 @@ QPushButton:pressed {
 BUY_COLOR = "#00E676"
 SELL_COLOR = "#FF5252"
 WAIT_COLOR = "#FFD54F"
-TEXT_COLOR = "#FFFFFF"
+
+TEXT_COLOR = "#E6EDF3"
 
 # ------------------------------------------
 # Status Colors
@@ -70,13 +111,25 @@ WATCH_COLOR = "#29B6F6"
 AVOID_COLOR = "#FF5252"
 
 # ------------------------------------------
-# Dashboard Card Style
+# Dashboard Cards
 # ------------------------------------------
 
 CARD_STYLE = """
 QFrame{
-    background-color:#1E1E1E;
-    border:1px solid #2E2E2E;
-    border-radius:10px;
+    background-color:#161B22;
+    border:1px solid #30363D;
+    border-radius:14px;
 }
 """
+
+# ------------------------------------------
+# Accent Colors
+# ------------------------------------------
+
+PRIMARY_COLOR = "#58A6FF"
+SUCCESS_COLOR = "#00E676"
+WARNING_COLOR = "#FFD54F"
+DANGER_COLOR = "#FF5252"
+BACKGROUND_COLOR = "#0E1117"
+CARD_COLOR = "#161B22"
+BORDER_COLOR = "#30363D"

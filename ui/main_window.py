@@ -1,6 +1,11 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QScrollArea
+)
+
 from PySide6.QtCore import Qt, QTimer
 
 from ui.dashboard_widgets import DashboardWidget
@@ -12,8 +17,10 @@ class LiquidityHunterWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Liquidity Hunter AI V14.5")
-        self.resize(550, 900)
+        self.setWindowTitle("Liquidity Hunter AI V15.1")
+        self.resize(650, 900)
+        self.setMinimumSize(600, 700)
+
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         self.setStyleSheet(APP_STYLE)
@@ -21,16 +28,34 @@ class LiquidityHunterWindow(QMainWindow):
         self.controller = Controller()
         self.dashboard = DashboardWidget()
 
-        self.setCentralWidget(self.dashboard)
+        # -------------------------------
+        # Scroll Area
+        # -------------------------------
 
-        self.dashboard.refresh_button.clicked.connect(self.refresh_signal)
+        self.scroll = QScrollArea()
 
-        # First Refresh
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.scroll.setWidget(self.dashboard)
+
+        self.setCentralWidget(self.scroll)
+
+        # -------------------------------
+
+        self.dashboard.refresh_button.clicked.connect(
+            self.refresh_signal
+        )
+
         self.refresh_signal()
 
-        # Auto Refresh every 30 seconds
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_signal)
+
+        self.timer.timeout.connect(
+            self.refresh_signal
+        )
+
         self.timer.start(30000)
 
     def refresh_signal(self):
@@ -39,9 +64,11 @@ class LiquidityHunterWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+
     app = QApplication(sys.argv)
 
     window = LiquidityHunterWindow()
+
     window.show()
 
     sys.exit(app.exec())
