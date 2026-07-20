@@ -57,11 +57,13 @@ class TradeManager:
         # -----------------------------
         # Signal Status Validation
         # -----------------------------
+
         if signal["status"] != "READY":
 
             print("Trade Blocked :", signal["status"])
 
-            return {
+            trade = {
+
                 "signal": signal["signal"],
                 "confidence": signal["confidence"],
                 "quality": signal["quality"],
@@ -77,11 +79,33 @@ class TradeManager:
                 "risk_reward": None,
 
                 "trade_score": 0,
-                "trade_status": "WAIT",
+                "trade_status": signal["status"],
                 "trade_reason": [
                     f"Signal Status = {signal['status']}"
-                ]
+                ],
+
+                "entry_type": "NONE",
+                "entry_zone": None,
+                "confirmation": "NONE",
+                "entry_quality": "C"
             }
+
+            entry_info = self.smart_entry.analyze(
+                signal,
+                trade
+            )
+
+            trade["entry_type"] = entry_info["entry_type"]
+            trade["entry_zone"] = entry_info["entry_zone"]
+            trade["confirmation"] = entry_info["confirmation"]
+            trade["entry_quality"] = entry_info["entry_quality"]
+
+            trade["trade_reason"].append(
+                entry_info["reason"]
+            )
+
+            return trade
+
         # -----------------------------
         # Market Volatility
         # -----------------------------

@@ -12,8 +12,8 @@ class LiquidityHunterWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Liquidity Hunter AI V13")
-        self.resize(500, 700)
+        self.setWindowTitle("Liquidity Hunter AI V14.5")
+        self.resize(550, 900)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         self.setStyleSheet(APP_STYLE)

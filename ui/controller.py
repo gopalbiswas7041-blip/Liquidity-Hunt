@@ -1,5 +1,5 @@
 # ==========================================
-# Liquidity Hunter AI V14.2.2
+# Liquidity Hunter AI V14.5
 # controller.py
 # ==========================================
 
@@ -55,6 +55,18 @@ class Controller:
                 data_15m
             )
 
+            # Market Context
+            market_context = {
+
+                "trend": signal.get("trend", "UNKNOWN"),
+                "market_phase": signal.get("market_phase", "UNKNOWN"),
+                "liquidity_sweep": signal.get("liquidity_sweep", False),
+                "choch": signal.get("choch", False),
+                "order_block": signal.get("order_block", False),
+                "fvg": signal.get("fvg", False)
+
+            }
+
             # Trade
             trade = self.trade_manager.generate_trade(
                 signal,
@@ -89,6 +101,14 @@ class Controller:
                 "confirmation": trade.get("confirmation", "--"),
                 "entry_quality": trade.get("entry_quality", "--"),
 
+                # Market Context
+                "trend": market_context["trend"],
+                "market_phase": market_context["market_phase"],
+                "liquidity_sweep": market_context["liquidity_sweep"],
+                "choch": market_context["choch"],
+                "order_block": market_context["order_block"],
+                "fvg": market_context["fvg"],
+
                 "trade_reason": trade.get("trade_reason", [])
 
             }
@@ -122,6 +142,13 @@ class Controller:
                 "entry_zone": "--",
                 "confirmation": "--",
                 "entry_quality": "--",
+
+                "trend": "--",
+                "market_phase": "--",
+                "liquidity_sweep": "--",
+                "choch": "--",
+                "order_block": "--",
+                "fvg": "--",
 
                 "trade_reason": [str(e)]
 

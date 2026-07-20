@@ -23,10 +23,25 @@ class SmartEntryEngine:
 
         direction = signal.get("direction", "NONE")
 
-        if trade.get("trade_status") != "READY":
-            result["reason"] = "Trade Status = {}".format(
-                trade.get("trade_status")
-            )
+        status = trade.get("trade_status", "WAIT")
+
+        if status == "AVOID":
+
+            result["entry_type"] = "NO ENTRY"
+            result["confirmation"] = "Timeframe Conflict"
+            result["entry_quality"] = "D"
+            result["reason"] = (
+            "Higher timeframe trend conflicts with the lower timeframe signal. "
+            "Wait until both timeframes align before entering."
+        )
+            return result
+
+        elif status == "WAIT":
+
+            result["entry_type"] = "WAIT"
+            result["confirmation"] = "Better confirmation required"
+            result["entry_quality"] = "B"
+            result["reason"] = "Wait for stronger confirmation before entering."
             return result
 
         entry = trade.get("entry")

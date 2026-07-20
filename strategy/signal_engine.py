@@ -70,11 +70,25 @@ class SignalEngine:
         )
 
         signal = {
+
             "signal": confluence["direction"],
             "confidence": confluence["confidence"],
             "quality": confluence["quality"],
             "status": confluence["status"],
-            "reasons": confluence["reasons"]
+            "reasons": confluence["reasons"],
+
+            # -------------------------
+            # Market Context
+            # -------------------------
+
+            "trend": trend.get("trend", "UNKNOWN"),
+            "market_phase": trend.get("status", "UNKNOWN"),
+
+            "liquidity_sweep": len(liquidity) > 0,
+            "choch": len(choch) > 0,
+            "order_block": len(order_blocks) > 0,
+            "fvg": len(fvg) > 0
+
         }
 
         # -------------------------
