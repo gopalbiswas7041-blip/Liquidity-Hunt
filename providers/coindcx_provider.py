@@ -8,7 +8,7 @@ class CoinDCXProvider(BaseProvider):
 
     BASE_URL = "https://public.coindcx.com"
 
-    def _init_(self):
+    def __init__(self):
         self.connected = False
 
     def connect(self):
@@ -18,17 +18,6 @@ class CoinDCXProvider(BaseProvider):
     def disconnect(self):
         self.connected = False
         print("CoinDCX Provider Disconnected")
-
-    def build_candle_url(self, symbol, timeframe, limit=500):
-        """
-        Build CoinDCX Candle API URL.
-        """
-        return (
-            f"{self.BASE_URL}/market_data/candles"
-            f"?pair={symbol}"
-            f"&interval={timeframe}"
-            f"&limit={limit}"
-        )
 
     def get_live_price(self, symbol):
         """
@@ -43,9 +32,7 @@ class CoinDCXProvider(BaseProvider):
         tickers = response.json()
 
         for ticker in tickers:
-            market = ticker.get("market", "")
-
-            if market == symbol:
+            if ticker.get("market") == symbol:
                 return float(ticker["last_price"])
 
         raise ValueError(f"Market '{symbol}' not found.")
@@ -55,13 +42,20 @@ class CoinDCXProvider(BaseProvider):
         Download candle data from CoinDCX REST API.
         """
 
-        url = self.build_candle_url(
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=limit
+        url = f"{self.BASE_URL}/market_data/candles"
+
+        params = {
+            "pair": symbol,
+            "interval": timeframe,
+            "limit": limit
+        }
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=10
         )
 
-        response = requests.get(url, timeout=10)
         response.raise_for_status()
 
         candles = response.json()

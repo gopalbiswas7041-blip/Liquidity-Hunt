@@ -1,5 +1,5 @@
 # ==========================================
-# Liquidity Hunter AI V13
+# Liquidity Hunter AI V14
 # controller.py
 # ==========================================
 
@@ -7,11 +7,18 @@ from data.market_data import MarketData
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
 from indicators.atr import ATR
+from providers.coindcx_provider import CoinDCXProvider
 
 
 class Controller:
+
     def __init__(self):
-        self.market = MarketData("^NSEI")
+
+        self.market = MarketData(
+            "B-BTC_USDT",
+            provider=CoinDCXProvider()
+        )
+
         self.engine = SignalEngine()
         self.trade_manager = TradeManager()
         self.atr = ATR()
@@ -23,6 +30,7 @@ class Controller:
         """
 
         try:
+
             # Load Market Data
             data_5m = self.market.load_data("5m")
             data_15m = self.market.load_data("15m")
@@ -43,7 +51,8 @@ class Controller:
             )
 
             return {
-                "symbol": "^NSEI",
+
+                "symbol": "BTCUSDT",
                 "timeframe": "5 Minute",
 
                 "signal": trade.get("signal", "NO TRADE"),
@@ -64,12 +73,14 @@ class Controller:
                 "trade_score": trade.get("trade_score", 0),
                 "trade_status": trade.get("trade_status", "WAIT"),
                 "trade_reason": trade.get("trade_reason", [])
+
             }
 
         except Exception as e:
 
             return {
-                "symbol": "^NSEI",
+
+                "symbol": "BTCUSDT",
                 "timeframe": "5 Minute",
 
                 "signal": "ERROR",
@@ -90,4 +101,5 @@ class Controller:
                 "trade_score": 0,
                 "trade_status": "ERROR",
                 "trade_reason": [str(e)]
+
             }

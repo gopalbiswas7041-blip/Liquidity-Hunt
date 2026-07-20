@@ -1,4 +1,5 @@
 from providers.yahoo_provider import YahooProvider
+from providers.coindcx_provider import CoinDCXProvider
 
 
 class MarketData:
@@ -21,9 +22,20 @@ class MarketData:
         print(f"Symbol: {self.symbol}")
         print(f"Timeframe: {timeframe}")
 
+        api_timeframe = timeframe
+
+        # CoinDCX workaround
+        if isinstance(self.provider, CoinDCXProvider):
+
+            if timeframe == "5m":
+                api_timeframe = "1m"
+
+            elif timeframe == "15m":
+                api_timeframe = "15m"
+
         data = self.provider.get_candles(
             self.symbol,
-            timeframe
+            api_timeframe
         )
 
         print(data.tail())
