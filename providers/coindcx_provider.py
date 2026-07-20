@@ -107,3 +107,19 @@ class CoinDCXProvider(BaseProvider):
         )
 
         return df
+    def get_capabilities(self):
+        """
+        Return CoinDCX provider capabilities.
+        """
+
+        return {
+            "provider": "CoinDCX",
+            "live": True,
+            "historical": True,
+            "supported_timeframes": [
+                "1m",
+                "15m"
+            ],
+            "max_candles": 500,
+            "supports_websocket": False
+        }

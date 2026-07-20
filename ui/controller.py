@@ -1,5 +1,5 @@
 # ==========================================
-# Liquidity Hunter AI V14
+# Liquidity Hunter AI V14.2.2
 # controller.py
 # ==========================================
 
@@ -8,6 +8,7 @@ from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
 from indicators.atr import ATR
 from providers.coindcx_provider import CoinDCXProvider
+from utils.candle_sync import CandleSync
 
 
 class Controller:
@@ -23,6 +24,9 @@ class Controller:
         self.trade_manager = TradeManager()
         self.atr = ATR()
 
+        # Smart Candle Sync
+        self.candle_sync = CandleSync()
+
     def refresh(self):
         """
         Load latest market data and return
@@ -31,9 +35,16 @@ class Controller:
 
         try:
 
-            # Load Market Data
+            # Load cached data
             data_5m = self.market.load_data("5m")
             data_15m = self.market.load_data("15m")
+
+            # Check for new candles
+            if self.candle_sync.is_new_candle("5m", data_5m):
+                data_5m = self.market.refresh_cache("5m")
+
+            if self.candle_sync.is_new_candle("15m", data_15m):
+                data_15m = self.market.refresh_cache("15m")
 
             # ATR
             volatility = self.atr.get_volatility(data_5m)
