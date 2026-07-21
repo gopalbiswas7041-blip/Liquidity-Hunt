@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QHBoxLayout,
     QFormLayout,
     QGroupBox,
     QFrame
@@ -29,6 +30,44 @@ class DashboardWidget(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(12)
+
+        # ====================================================
+        # PROFESSIONAL HEADER CARD
+        # ====================================================
+
+        header = QFrame()
+        header.setObjectName("headerCard")
+
+        header_layout = QHBoxLayout(header)
+
+        left_layout = QVBoxLayout()
+
+        self.title = QLabel("LIQUIDITY HUNTER AI")
+        self.title.setObjectName("headerTitle")
+
+        self.subtitle = QLabel("Professional Trading Dashboard")
+        self.subtitle.setObjectName("headerSubtitle")
+
+        left_layout.addWidget(self.title)
+        left_layout.addWidget(self.subtitle)
+
+        right_layout = QVBoxLayout()
+
+        self.live_status = QLabel("🟢 LIVE")
+        self.symbol = QLabel("BTC/USDT")
+        self.timeframe = QLabel("5m")
+        self.live_price = QLabel("--")
+
+        right_layout.addWidget(self.live_status)
+        right_layout.addWidget(self.symbol)
+        right_layout.addWidget(self.timeframe)
+        right_layout.addWidget(self.live_price)
+
+        header_layout.addLayout(left_layout)
+        header_layout.addStretch()
+        header_layout.addLayout(right_layout)
+
+        main_layout.addWidget(header)
 
         # ====================================================
         # MARKET CONTEXT

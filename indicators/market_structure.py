@@ -102,4 +102,9 @@ class MarketStructure:
 
         print(f"Structures Found : {len(structures)}")
 
+        structures = sorted(
+            structures,
+            key=lambda x: x["index"]
+        )
+
         return structures

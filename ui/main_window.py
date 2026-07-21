@@ -3,34 +3,43 @@ import sys
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
-    QScrollArea
+    QScrollArea,
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout
 )
 
 from PySide6.QtCore import Qt, QTimer
 
 from ui.dashboard_widgets import DashboardWidget
+from ui.watchlist_widget import WatchlistWidget
+from ui.chart_widget import ChartWidget
 from ui.controller import Controller
 from ui.styles import APP_STYLE
 
 
 class LiquidityHunterWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Liquidity Hunter AI V15.1")
-        self.resize(650, 900)
-        self.setMinimumSize(600, 700)
+        self.setWindowTitle("Liquidity Hunter AI V16")
+        self.resize(1400, 900)
+        self.setMinimumSize(1200, 700)
 
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         self.setStyleSheet(APP_STYLE)
 
         self.controller = Controller()
-        self.dashboard = DashboardWidget()
 
-        # -------------------------------
-        # Scroll Area
-        # -------------------------------
+        self.dashboard = DashboardWidget()
+        self.chart = ChartWidget()
+        self.watchlist = WatchlistWidget()
+
+        # ---------------------------------
+        # Dashboard Scroll Area
+        # ---------------------------------
 
         self.scroll = QScrollArea()
 
@@ -40,9 +49,33 @@ class LiquidityHunterWindow(QMainWindow):
 
         self.scroll.setWidget(self.dashboard)
 
-        self.setCentralWidget(self.scroll)
+        # ---------------------------------
+        # Left Panel (Chart + Dashboard)
+        # ---------------------------------
 
-        # -------------------------------
+        left_panel = QWidget()
+
+        left_layout = QVBoxLayout(left_panel)
+
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        left_layout.addWidget(self.chart)
+        left_layout.addWidget(self.scroll)
+
+        # ---------------------------------
+        # Main Layout
+        # ---------------------------------
+
+        container = QWidget()
+
+        layout = QHBoxLayout(container)
+
+        layout.addWidget(left_panel, 3)
+        layout.addWidget(self.watchlist, 1)
+
+        self.setCentralWidget(container)
+
+        # ---------------------------------
 
         self.dashboard.refresh_button.clicked.connect(
             self.refresh_signal
@@ -59,7 +92,9 @@ class LiquidityHunterWindow(QMainWindow):
         self.timer.start(30000)
 
     def refresh_signal(self):
+
         data = self.controller.refresh()
+
         self.dashboard.update_dashboard(data)
 
 
