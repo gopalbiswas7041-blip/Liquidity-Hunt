@@ -71,23 +71,54 @@ class SignalEngine:
 
         signal = {
 
+            # ---------------------------------
+            # Final Trading Signal
+            # ---------------------------------
+
             "signal": confluence["direction"],
             "confidence": confluence["confidence"],
             "quality": confluence["quality"],
             "status": confluence["status"],
-            "reasons": confluence["reasons"],
+            "valid": confluence["valid"],
 
-            # -------------------------
+            # ---------------------------------
             # Market Context
-            # -------------------------
+            # ---------------------------------
 
             "trend": trend.get("trend", "UNKNOWN"),
             "market_phase": trend.get("status", "UNKNOWN"),
 
+            # ---------------------------------
+            # Smart Money Components
+            # ---------------------------------
+
             "liquidity_sweep": len(liquidity) > 0,
             "choch": len(choch) > 0,
             "order_block": len(order_blocks) > 0,
-            "fvg": len(fvg) > 0
+            "fvg": len(fvg) > 0,
+
+            # ---------------------------------
+            # AI Scorecard
+            # ---------------------------------
+
+            "bullish_score":
+                confluence["scorecard"]["bullish_score"],
+
+            "bearish_score":
+                confluence["scorecard"]["bearish_score"],
+
+            # ---------------------------------
+            # Explanation
+            # ---------------------------------
+
+            "reasons": confluence["reasons"],
+
+            # ---------------------------------
+            # Future Watchlist Support
+            # ---------------------------------
+
+            "symbol": getattr(data_5m, "symbol", "UNKNOWN"),
+            "timeframe": "5m"
 
         }
 
@@ -110,22 +141,30 @@ class SignalEngine:
         print("Direction :", mtf["direction"])
         print("Reason    :", mtf["reason"])
 
-        # -------------------------
-        # Final Decision
-        # -------------------------
+        # =====================================================
+        # Final Decision Engine V16.1
+        # =====================================================
 
-        if confluence["status"] == "AVOID":
+        if not confluence["valid"]:
 
-            signal["status"] = "AVOID"
             signal["signal"] = "NO TRADE"
+            signal["status"] = "AVOID"
+
+        elif mtf["status"] != "READY":
+
+            signal["signal"] = "NO TRADE"
+            signal["status"] = mtf["status"]
 
         else:
 
-            signal["status"] = mtf["status"]
+            signal["signal"] = mtf["direction"]
+            signal["status"] = "READY"
 
-            if mtf["status"] == "READY":
-                signal["signal"] = mtf["direction"]
-            else:
-                signal["signal"] = "NO TRADE"   
+        # ----------------------------------------
+        # Final Metadata
+        # ----------------------------------------
+
+        signal["trade_valid"] = confluence["valid"]
+        signal["trade_direction"] = confluence["direction"]
 
         return signal
