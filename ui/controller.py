@@ -1,6 +1,6 @@
 # ==========================================
-# Liquidity Hunter AI V14.5
-# controller.py
+# Liquidity Hunter AI V17
+# ui/controller.py
 # ==========================================
 
 from data.market_data import MarketData
@@ -35,27 +35,51 @@ class Controller:
 
         try:
 
-            # Load cached data
+            # -------------------------
+            # Load Market Data
+            # -------------------------
+
             data_5m = self.market.load_data("5m")
             data_15m = self.market.load_data("15m")
 
-            # Check for new candles
+            # -------------------------
+            # Refresh only if new candle
+            # -------------------------
+
             if self.candle_sync.is_new_candle("5m", data_5m):
                 data_5m = self.market.refresh_cache("5m")
 
             if self.candle_sync.is_new_candle("15m", data_15m):
                 data_15m = self.market.refresh_cache("15m")
 
+            # -------------------------
             # ATR
+            # -------------------------
+
             volatility = self.atr.get_volatility(data_5m)
 
-            # Signal
+            # -------------------------
+            # Signal Engine
+            # -------------------------
+
             signal = self.engine.generate_signal(
                 data_5m,
                 data_15m
             )
 
+            # -------------------------
+            # Trade Manager
+            # -------------------------
+
+            trade = self.trade_manager.generate_trade(
+                signal,
+                data_5m
+            )
+
+            # -------------------------
             # Market Context
+            # -------------------------
+
             market_context = {
 
                 "trend": signal.get("trend", "UNKNOWN"),
@@ -67,13 +91,11 @@ class Controller:
 
             }
 
-            # Trade
-            trade = self.trade_manager.generate_trade(
-                signal,
-                data_5m
-            )
+            # -------------------------
+            # GUI Data
+            # -------------------------
 
-            return {
+            result = {
 
                 "symbol": "BTCUSDT",
                 "timeframe": "5 Minute",
@@ -101,7 +123,6 @@ class Controller:
                 "confirmation": trade.get("confirmation", "--"),
                 "entry_quality": trade.get("entry_quality", "--"),
 
-                # Market Context
                 "trend": market_context["trend"],
                 "market_phase": market_context["market_phase"],
                 "liquidity_sweep": market_context["liquidity_sweep"],
@@ -109,9 +130,15 @@ class Controller:
                 "order_block": market_context["order_block"],
                 "fvg": market_context["fvg"],
 
-                "trade_reason": trade.get("trade_reason", [])
+                "trade_reason": trade.get("trade_reason", []),
+
+                # Chart Data
+                "data_5m": data_5m,
+                "data_15m": data_15m
 
             }
+
+            return result
 
         except Exception as e:
 
@@ -150,6 +177,10 @@ class Controller:
                 "order_block": "--",
                 "fvg": "--",
 
-                "trade_reason": [str(e)]
+                "trade_reason": [str(e)],
+
+                # Empty Chart Data
+                "data_5m": None,
+                "data_15m": None
 
             }
