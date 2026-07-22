@@ -101,12 +101,14 @@ class CoinDCXProvider(BaseProvider):
             inplace=True
         )
 
-        df.reset_index(
-            drop=True,
+        # Datetime কে Index হিসেবে ব্যবহার করা হবে
+        df.set_index(
+            "Datetime",
             inplace=True
         )
 
         return df
+
     def get_capabilities(self):
         """
         Return CoinDCX provider capabilities.
