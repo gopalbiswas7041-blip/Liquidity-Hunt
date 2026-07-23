@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 import queue
+import json
 
 from datetime import datetime
 from typing import Callable
@@ -429,11 +430,16 @@ class CoinDCXWebSocket:
                     self.socket_url,
                 )
 
+                self.logger.info("Calling sio.connect()...")
+
                 self.sio.connect(
                     self.socket_url,
+                    transports=["websocket"],
                     wait=True,
                     wait_timeout=self.WAIT_TIMEOUT,
                 )
+
+                self.logger.info("sio.connect() returned.")
 
                 self.sio.wait()
 
@@ -543,7 +549,8 @@ class CoinDCXWebSocket:
             )
 
         # ----------------------------------------------
-
+        
+        @self.sio.event
         def connect_error(error):
 
             self.last_error = error
@@ -650,12 +657,22 @@ class CoinDCXWebSocket:
 
         try:
 
+            if isinstance(data, dict) and "data" in data:
+                data = json.loads(data["data"])
+
             self.tick_queue.put_nowait(data)
 
         except queue.Full:
 
             self.logger.warning(
                 "Tick queue is full. Tick dropped."
+            )
+
+        except Exception as exc:
+
+            self.logger.exception(
+                "Tick parse failed: %s",
+                exc,
             )
 
     # ==================================================

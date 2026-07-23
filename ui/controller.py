@@ -31,21 +31,22 @@ class Controller:
         # Smart Candle Sync
         self.candle_sync = CandleSync()
 
+        # -----------------------------------------
         # WebSocket
+        # -----------------------------------------
+
         self.websocket = CoinDCXWebSocket()
 
+        # Tick callback
+        self.websocket.set_tick_callback(
+            self.on_live_tick
+        )
+
+        # Connect
         self.websocket.connect(
             url="https://stream.coindcx.com",
             symbol="B-BTC_USDT@trades"
         )
-
-        # Tick callback
-        self.websocket.set_tick_callback(self.on_live_tick)
-
-        self.websocket.connect(
-            url="https://stream.coindcx.com",
-            symbol="B-BTC_USDT@trades"
-)
 
         print("Starting CoinDCX WebSocket...")
         print(self.websocket)
