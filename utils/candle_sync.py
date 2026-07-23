@@ -18,7 +18,7 @@ class CandleSync:
         if data is None or data.empty:
             return False
 
-        latest = data.iloc[-1]["Datetime"]
+        latest = data.index[-1]
 
         if isinstance(latest, str):
             latest = datetime.fromisoformat(latest)

@@ -3,12 +3,16 @@
 # ui/controller.py
 # ==========================================
 
+import traceback
+
 from data.market_data import MarketData
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
 from indicators.atr import ATR
 from providers.coindcx_provider import CoinDCXProvider
+from providers.coindcx_websocket import CoinDCXWebSocket
 from utils.candle_sync import CandleSync
+
 
 
 class Controller:
@@ -26,6 +30,18 @@ class Controller:
 
         # Smart Candle Sync
         self.candle_sync = CandleSync()
+
+        # WebSocket
+        self.websocket = CoinDCXWebSocket()
+
+        # Start WebSocket
+        self.websocket.connect(
+            url="https://stream.coindcx.com",
+            symbol="B-BTC_USDT"
+        )
+
+        print("Starting CoinDCX WebSocket...")
+        print(self.websocket)
 
     def refresh(self):
         """
@@ -141,6 +157,10 @@ class Controller:
             return result
 
         except Exception as e:
+
+            print("=========== CONTROLLER ERROR ===========")
+            traceback.print_exc()
+            print("========================================")
 
             return {
 
