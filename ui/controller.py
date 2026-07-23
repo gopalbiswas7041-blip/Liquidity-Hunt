@@ -34,11 +34,18 @@ class Controller:
         # WebSocket
         self.websocket = CoinDCXWebSocket()
 
-        # Start WebSocket
         self.websocket.connect(
             url="https://stream.coindcx.com",
-            symbol="B-BTC_USDT"
+            symbol="B-BTC_USDT@trades"
         )
+
+        # Tick callback
+        self.websocket.set_tick_callback(self.on_live_tick)
+
+        self.websocket.connect(
+            url="https://stream.coindcx.com",
+            symbol="B-BTC_USDT@trades"
+)
 
         print("Starting CoinDCX WebSocket...")
         print(self.websocket)
@@ -204,3 +211,10 @@ class Controller:
                 "data_15m": None
 
             }
+            
+    def on_live_tick(self, tick):
+
+        print("=" * 60)
+        print("LIVE TICK RECEIVED")
+        print(tick)
+        print("=" * 60)

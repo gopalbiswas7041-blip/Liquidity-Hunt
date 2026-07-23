@@ -1,435 +1,981 @@
 """
-===========================================================
+============================================================
 Liquidity Hunter AI
-Official CoinDCX Socket.IO Engine
-Version : V17.3
-Part 1 - Foundation
-===========================================================
+CoinDCX Socket.IO Engine
+Production Edition (V17.4 Clean)
+============================================================
+
+Author  : Liquidity Hunter AI
+Purpose : Production-grade live market data engine
+Provider: CoinDCX Socket.IO
+
+============================================================
 """
 
+from __future__ import annotations
+
 import logging
-import socketio
 import threading
 import time
+import queue
 
-from typing import Callable, Optional
+from datetime import datetime
+from typing import Callable
+from typing import Optional
+
+import socketio
+
+from providers.live_candle_builder import LiveCandleBuilder
 
 
 class CoinDCXWebSocket:
     """
-    Liquidity Hunter AI
+    Production-grade CoinDCX Socket.IO Engine
 
-    Official CoinDCX Socket.IO Client
-    Production Foundation
+    Responsibilities
+    ----------------
+    • Socket.IO Connection
+    • Automatic Reconnection
+    • Market Subscription
+    • Tick Processing
+    • Live Candle Building
+    • Queue Processing
+    • Controller Notification
+    • Chart Update
     """
 
-    # --------------------------------------------------
-    # Constructor
-    # --------------------------------------------------
+    DEFAULT_SOCKET_URL = "https://stream.coindcx.com"
 
-    def __init__(self):
+    DEFAULT_TIMEFRAME = "1m"
 
+    WAIT_TIMEOUT = 20
+
+    RECONNECT_DELAY = 5
+
+    MAX_RECONNECT_DELAY = 60
+
+    HEARTBEAT_TIMEOUT = 30
+
+    QUEUE_SIZE = 5000
+
+    # ==================================================
+    # Initialization
+    # ==================================================
+
+    def __init__(
+        self,
+        timeframe: str = DEFAULT_TIMEFRAME,
+    ):
+
+        # ----------------------------------------------
         # Logger
-        self.logger = logging.getLogger("CoinDCXWebSocket")
+        # ----------------------------------------------
+
+        self.logger = logging.getLogger(
+            self.__class__.__name__
+        )
+
+        if not self.logger.handlers:
+
+            handler = logging.StreamHandler()
+
+            formatter = logging.Formatter(
+                "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+            )
+
+            handler.setFormatter(formatter)
+
+            self.logger.addHandler(handler)
+
         self.logger.setLevel(logging.INFO)
 
+        # ----------------------------------------------
         # Socket.IO Client
+        # ----------------------------------------------
+
         self.sio = socketio.Client(
+
             reconnection=True,
+
             reconnection_attempts=0,
-            reconnection_delay=5,
+
+            reconnection_delay=self.RECONNECT_DELAY,
+
             logger=False,
+
             engineio_logger=False,
         )
 
-        # Connection State
-        self.connected = False
-        self.running = False
+        # ----------------------------------------------
+        # Synchronization
+        # ----------------------------------------------
 
-        # Market
-        self.symbol = None
+        self._lock = threading.RLock()
 
-        # Statistics
-        self.messages_received = 0
-        self.last_message_time = None
-
-        # Callbacks
-        self.on_tick: Optional[Callable] = None
-        self.on_connected: Optional[Callable] = None
-        self.on_disconnected: Optional[Callable] = None
-
-        # Thread
-        self.thread = None
-
-        # --------------------------------------------------
-        # Thread Safety
-        # --------------------------------------------------
-
-        self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
-        # --------------------------------------------------
-        # Subscription Management
-        # --------------------------------------------------
+        # ----------------------------------------------
+        # Runtime State
+        # ----------------------------------------------
 
-        # Supports multiple market subscriptions
+        self.running = False
+
+        self.connected = False
+
+        self.symbol = None
+
+        self.connection_time = None
+
+        self.last_message_time = None
+
+        self.last_tick_time = None
+
+        self.last_heartbeat = None
+
+        self.last_error = None
+
+        self.reconnect_attempts = 0
+
+        self.reconnect_delay = self.RECONNECT_DELAY
+
+        # ----------------------------------------------
+        # Statistics
+        # ----------------------------------------------
+
+        self.received_ticks = 0
+
+        self.processed_ticks = 0
+
+        # ----------------------------------------------
+        # Subscription State
+        # ----------------------------------------------
+
         self.subscriptions = set()
 
-        # --------------------------------------------------
-        # Connection Statistics
-        # --------------------------------------------------
+        # ----------------------------------------------
+        # Tick Queue
+        # ----------------------------------------------
 
-        self.reconnect_count = 0
-        self.connection_attempts = 0
-        self.last_connected_time = None
-        self.last_disconnected_time = None
+        self.tick_queue = queue.Queue(
+            maxsize=self.QUEUE_SIZE
+        )
 
-        # --------------------------------------------------
-        # Heartbeat
-        # --------------------------------------------------
+        # ----------------------------------------------
+        # Worker Threads
+        # ----------------------------------------------
 
-        self.last_ping = None
-        self.last_pong = None
+        self.socket_thread = None
 
-        # --------------------------------------------------
-        # Tick Cache
-        # --------------------------------------------------
+        self.queue_thread = None
 
-        self.last_tick = None
+        self.monitor_thread = None
 
-        # --------------------------------------------------
-        # Background Thread
-        # --------------------------------------------------
+        self.performance_thread = None
 
-        self.thread = None
-        self.thread_started = False
+        # ----------------------------------------------
+        # Market Components
+        # ----------------------------------------------
+
+        self.candle_builder = LiveCandleBuilder(
+            timeframe=timeframe
+        )
+
+        self.controller = None
+
+        self.chart_widget = None
+
+        # ----------------------------------------------
+        # Duplicate Tick Protection
+        # ----------------------------------------------
+
+        self._last_tick_key = {}
+
+        # ----------------------------------------------
+        # Callbacks
+        # ----------------------------------------------
+
+        self.on_tick: Optional[Callable] = None
+
+        self.on_candle: Optional[Callable] = None
+
+        self.on_connected: Optional[Callable] = None
+
+        self.on_disconnected: Optional[Callable] = None
+
+        # ----------------------------------------------
+        # Internal Flags
+        # ----------------------------------------------
+
+        self._events_registered = False
+
+        # ----------------------------------------------
+        # Startup Log
+        # ----------------------------------------------
 
         self.logger.info("=" * 60)
         self.logger.info("Liquidity Hunter AI")
-        self.logger.info("CoinDCX Socket.IO Engine Initialized")
+        self.logger.info(
+            "CoinDCX Socket.IO Engine (Production)"
+        )
+        self.logger.info(
+            "Initialization Completed"
+        )
         self.logger.info("=" * 60)
 
-    # --------------------------------------------------
+    # ==================================================
     # Callback Registration
-    # --------------------------------------------------
+    # ==================================================
 
-    def set_tick_callback(self, callback: Callable):
+    def set_tick_callback(
+        self,
+        callback: Callable,
+    ):
+
         self.on_tick = callback
 
-    def set_connected_callback(self, callback: Callable):
+    def set_candle_callback(
+        self,
+        callback: Callable,
+    ):
+
+        self.on_candle = callback
+
+    def set_connected_callback(
+        self,
+        callback: Callable,
+    ):
+
         self.on_connected = callback
 
-    def set_disconnected_callback(self, callback: Callable):
+    def set_disconnected_callback(
+        self,
+        callback: Callable,
+    ):
+
         self.on_disconnected = callback
 
-    # --------------------------------------------------
-    # Status
-    # --------------------------------------------------
+    def set_controller(
+        self,
+        controller,
+    ):
 
-    def is_connected(self):
+        self.controller = controller
+
+    def set_chart_widget(
+        self,
+        chart_widget,
+    ):
+
+        self.chart_widget = chart_widget
+
+    # ==================================================
+    # Status
+    # ==================================================
+
+    def is_connected(self) -> bool:
+
         return self.connected
 
-    def is_running(self):
+    def is_running(self) -> bool:
+
         return self.running
 
-    # --------------------------------------------------
-    # Statistics
-    # --------------------------------------------------
+    # ==================================================
+    # Internal Callback Helper
+    # ==================================================
 
-    def get_statistics(self):
+    def _safe_callback(
+        self,
+        callback: Optional[Callable],
+        *args,
+        **kwargs,
+    ):
 
-        return {
-            "connected": self.connected,
-            "running": self.running,
-            "symbol": self.symbol,
-            "subscriptions": list(self.subscriptions),
-            "messages_received": self.messages_received,
-            "last_message_time": self.last_message_time,
-            "connection_attempts": self.connection_attempts,
-            "reconnect_count": self.reconnect_count,
-            "last_connected_time": self.last_connected_time,
-            "last_disconnected_time": self.last_disconnected_time,
-        }
-
-    # --------------------------------------------------
-    # Object Representation
-    # --------------------------------------------------
-
-    def __repr__(self):
-
-        return (
-            f"<CoinDCXWebSocket "
-            f"connected={self.connected}, "
-            f"running={self.running}, "
-            f"symbol={self.symbol}>"
-        )
-
-    # --------------------------------------------------
-    # Connection
-    # --------------------------------------------------
-
-    def connect(self, url: str, symbol: str):
-
-        if self.running:
-            self.logger.warning("Connection already running.")
+        if callback is None:
             return
 
+        try:
+
+            callback(*args, **kwargs)
+
+        except Exception as exc:
+
+            self.logger.exception(
+                "Callback execution failed: %s",
+                exc,
+            )
+
+    # ==================================================
+    # Runtime Reset
+    # ==================================================
+
+    def _reset_runtime(self):
+
+        self.connected = False
+
+        self.running = False
+
+        self.connection_time = None
+
+        self.last_message_time = None
+
+        self.last_tick_time = None
+
+        self.last_heartbeat = None
+
+        self.last_error = None
+
+        self.received_ticks = 0
+
+        self.processed_ticks = 0
+
+        self.subscriptions.clear()
+
+        self._last_tick_key.clear()
+
+        while not self.tick_queue.empty():
+
+            try:
+
+                self.tick_queue.get_nowait()
+                self.tick_queue.task_done()
+
+            except queue.Empty:
+
+                break
+
+    # ==================================================
+    # Heartbeat
+    # ==================================================
+
+    def update_heartbeat(self):
+
+        self.last_heartbeat = time.time()
+
+    def heartbeat_age(self):
+
+        if self.last_heartbeat is None:
+
+            return None
+
+        return time.time() - self.last_heartbeat
+
+    def is_connection_healthy(self):
+
+        if not self.connected:
+
+            return False
+
+        age = self.heartbeat_age()
+
+        if age is None:
+
+            return True
+
+        return age <= self.HEARTBEAT_TIMEOUT
+
+    # ==================================================
+    # Connection Management
+    # ==================================================
+
+    def connect(
+        self,
+        url: str,
+        symbol: str,
+    ) -> bool:
+
+        if self.running:
+
+            self.logger.warning(
+                "WebSocket is already running."
+            )
+            return False
+
+        self.socket_url = url
         self.symbol = symbol
-        self.running = True
-        self.connection_attempts += 1
+
+        self._register_events()
+
         self._stop_event.clear()
 
-        self.register_events()
+        self.running = True
 
-        self.thread = threading.Thread(
+        self.socket_thread = threading.Thread(
             target=self._connection_worker,
-            args=(url,),
+            name="CoinDCXWebSocket",
             daemon=True,
         )
 
-        self.thread_started = True
+        self.socket_thread.start()
 
-        print(">>> Starting Background Thread <<<")
+        self.start_workers()
 
-        self.thread.start()
+        self.logger.info(
+            "Connection thread started."
+        )
 
-        print(">>> Thread Started <<<")
+        return True
 
-    # --------------------------------------------------
-    # Background Worker
-    # --------------------------------------------------
+    # ==================================================
 
-    def _connection_worker(self, url: str):
-
-        print(">>> Worker Function Entered <<<")
-
-        self.logger.info("Starting Socket.IO worker...")
+    def _connection_worker(self):
 
         while not self._stop_event.is_set():
 
             try:
 
-                self.logger.info(f"Connecting to {url}")
+                self.logger.info(
+                    "Connecting to %s",
+                    self.socket_url,
+                )
 
                 self.sio.connect(
-                    url,
-                    transports=["websocket"],
+                    self.socket_url,
                     wait=True,
-                    wait_timeout=20,
+                    wait_timeout=self.WAIT_TIMEOUT,
                 )
 
                 self.sio.wait()
 
-            except Exception as e:
+            except Exception as exc:
 
-                self.connected = False
-                self.reconnect_count += 1
+                self.last_error = exc
 
-                self.logger.error(
-                    f"Connection error: {e}"
+                self.logger.exception(
+                    "Connection failed: %s",
+                    exc,
                 )
 
-                if self._stop_event.is_set():
-                    break
+            if self._stop_event.is_set():
+                break
 
-                self.logger.info(
-                    "Retrying in 5 seconds..."
-                )
+            self.connected = False
 
-                time.sleep(5)
+            self.logger.info(
+                "Reconnecting in %.1f seconds...",
+                self.reconnect_delay,
+            )
 
-        self.logger.info("Socket worker stopped.")
+            time.sleep(self.reconnect_delay)
 
-    # --------------------------------------------------
-    # Disconnect
-    # --------------------------------------------------
+            self.reconnect_delay = min(
+                self.reconnect_delay * 2,
+                self.MAX_RECONNECT_DELAY,
+            )
+
+    # ==================================================
 
     def disconnect(self):
 
-        self.logger.info("Disconnect requested.")
+        self._stop_event.set()
 
         self.running = False
-        self._stop_event.set()
+
+        self.connected = False
 
         try:
 
             if self.sio.connected:
+
                 self.sio.disconnect()
 
-        except Exception as e:
+        except Exception as exc:
 
-            self.logger.error(
-                f"Disconnect error: {e}"
+            self.logger.exception(
+                "Disconnect failed: %s",
+                exc,
             )
 
-        if self.thread and self.thread.is_alive():
+        if (
+            self.socket_thread is not None
+            and self.socket_thread.is_alive()
+        ):
 
-            self.thread.join(timeout=5)
+            self.socket_thread.join(timeout=2)
 
-        self.connected = False
-        self.thread_started = False
+        self.logger.info(
+            "WebSocket stopped."
+        )
 
-        self.logger.info("Disconnected successfully.")
-
-    # --------------------------------------------------
+    # ==================================================
     # Socket.IO Event Registration
-    # --------------------------------------------------
+    # ==================================================
 
-    def register_events(self):
+    def _register_events(self):
+
+        if self._events_registered:
+            return
 
         @self.sio.event
         def connect():
 
             self.connected = True
-            self.last_connected_time = time.time()
 
-            self.logger.info("Socket.IO connected.")
+            self.connection_time = datetime.utcnow()
 
-            if self.symbol:
-                self.subscribe(self.symbol)
+            self.reconnect_delay = self.RECONNECT_DELAY
 
-            if self.on_connected:
-                try:
-                    self.on_connected()
-                except Exception as e:
-                    self.logger.error(
-                        f"Connected callback error: {e}"
-                    )
+            self.update_heartbeat()
+
+            self.logger.info(
+                "Connected to CoinDCX WebSocket."
+            )
+
+            self._subscribe_market()
+
+            self._safe_callback(
+                self.on_connected
+            )
+
+        # ----------------------------------------------
 
         @self.sio.event
         def disconnect():
 
             self.connected = False
-            self.last_disconnected_time = time.time()
 
-            self.logger.warning("Socket.IO disconnected.")
-
-            if self.on_disconnected:
-                try:
-                    self.on_disconnected()
-                except Exception as e:
-                    self.logger.error(
-                        f"Disconnected callback error: {e}"
-                    )
-
-        @self.sio.event
-        def connect_error(data):
-
-            self.connected = False
-
-            self.logger.error(
-                f"Connection failed: {data}"
-            )
-
-        @self.sio.event
-        def error(data):
-
-            self.logger.error(
-                f"Socket error: {data}"
-            )
-
-    # --------------------------------------------------
-    # Subscribe
-    # --------------------------------------------------
-
-    def subscribe(self, channel: str):
-
-        if not self.connected:
             self.logger.warning(
-                "Cannot subscribe. Socket not connected."
+                "Disconnected from CoinDCX WebSocket."
+            )
+
+            self._safe_callback(
+                self.on_disconnected
+            )
+
+        # ----------------------------------------------
+
+        def connect_error(error):
+
+            self.last_error = error
+
+            self.logger.error(
+                "Connection error: %s",
+                error,
+            )
+        @self.sio.on("new-trade")
+        def _on_new_trade(data):
+
+            self._handle_market_message(data)
+
+        self._events_registered = True
+
+    # ==================================================
+    # Market Subscription
+    # ==================================================
+
+    def _subscribe_market(self):
+
+        if not self.symbol:
+
+            self.logger.warning(
+                "No market symbol configured."
             )
             return
 
         try:
+
+            payload = {
+                "channelName": self.symbol,
+            }
 
             self.sio.emit(
                 "join",
-                {
-                    "channelName": channel
-                }
+                payload,
             )
 
-            self.subscriptions.add(channel)
+            self.subscriptions.add(
+                self.symbol
+            )
 
             self.logger.info(
-                f"Subscribed: {channel}"
+                "Subscribed to %s",
+                self.symbol,
             )
 
-        except Exception as e:
+        except Exception as exc:
 
-            self.logger.error(
-                f"Subscribe error: {e}"
+            self.last_error = exc
+
+            self.logger.exception(
+                "Subscription failed: %s",
+                exc,
             )
 
-    # --------------------------------------------------
-    # Unsubscribe
-    # --------------------------------------------------
+    # ==================================================
 
-    def unsubscribe(self, channel: str):
+    def _unsubscribe_market(self):
 
-        if not self.connected:
+        if not self.symbol:
             return
 
         try:
+
+            payload = {
+                "channelName": self.symbol,
+            }
 
             self.sio.emit(
                 "leave",
-                {
-                    "channelName": channel
-                }
+                payload,
             )
 
-            self.subscriptions.discard(channel)
+            self.subscriptions.discard(
+                self.symbol
+            )
 
             self.logger.info(
-                f"Unsubscribed: {channel}"
+                "Unsubscribed from %s",
+                self.symbol,
             )
 
-        except Exception as e:
+        except Exception as exc:
 
-            self.logger.error(
-                f"Unsubscribe error: {e}"
+            self.logger.exception(
+                "Unsubscribe failed: %s",
+                exc,
             )
 
-    # --------------------------------------------------
-    # Tick Handler
-    # --------------------------------------------------
+    # ==================================================
+    # Market Tick Event
+    # ==================================================
 
-    def process_tick(self, tick: dict):
+    def _handle_market_message(self, data):
 
-        if not isinstance(tick, dict):
+        self.received_ticks += 1
+
+        self.update_heartbeat()
+
+        if data is None:
             return
-
-        self.messages_received += 1
-        self.last_message_time = time.time()
-        self.last_tick = tick
 
         try:
 
-            if self.on_tick:
-                self.on_tick(tick)
+            self.tick_queue.put_nowait(data)
 
-        except Exception as e:
+        except queue.Full:
 
-            self.logger.error(
-                f"Tick callback error: {e}"
+            self.logger.warning(
+                "Tick queue is full. Tick dropped."
             )
 
-    # --------------------------------------------------
-    # Register Market Event
-    # --------------------------------------------------
+    # ==================================================
+    # Queue Worker
+    # ==================================================
 
-    def register_market_handler(self, event_name: str):
+    def _process_tick_queue(self):
 
-        @self.sio.on(event_name)
-        def market_message(data):
+        while not self._stop_event.is_set():
 
             try:
 
-                self.process_tick(data)
-
-            except Exception as e:
-
-                self.logger.error(
-                    f"Market message error: {e}"
+                tick = self.tick_queue.get(
+                    timeout=0.5
                 )
+
+            except queue.Empty:
+
+                continue
+
+            try:
+
+                self._process_tick(tick)
+
+            except Exception:
+
+                self.logger.exception(
+                    "Failed to process tick."
+                )
+
+            finally:
+
+                self.tick_queue.task_done()
+
+    # ==================================================
+    # Tick Processing
+    # ==================================================
+
+    def _process_tick(self, tick):
+
+        price = self.extract_price(tick)
+
+        if self.is_duplicate_tick(tick):
+            return
+
+        if price is None:
+            return
+
+        volume = self.extract_volume(tick)
+
+        tick_time = self.extract_timestamp(tick)
+
+        closed_candle = self.candle_builder.update_tick(
+            price=price,
+            volume=volume,
+            timestamp=tick_time,
+        )
+
+        self.processed_ticks += 1
+
+        self.last_tick_time = tick_time
+
+        self._safe_callback(
+            self.on_tick,
+            tick,
+        )
+
+        if closed_candle is not None:
+
+            self._safe_callback(
+                self.on_candle,
+                closed_candle,
+            )
+
+    # ==================================================
+    # Tick Field Extraction
+    # ==================================================
+
+    def extract_price(self, tick) -> Optional[float]:
+
+        try:
+            return float(tick["p"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def extract_volume(self, tick) -> float:
+
+        try:
+            return float(tick.get("q", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def extract_timestamp(self, tick) -> datetime:
+
+        try:
+            timestamp_ms = int(tick["T"])
+            return datetime.fromtimestamp(timestamp_ms / 1000)
+        except (KeyError, TypeError, ValueError):
+            return datetime.utcnow()
+
+    # ==================================================
+    # Duplicate Tick Filter
+    # ==================================================
+
+    def is_duplicate_tick(self, tick) -> bool:
+
+        key = (
+            tick.get("T"),
+            tick.get("p"),
+            tick.get("q"),
+        )
+
+        if self._last_tick_key.get(self.symbol) == key:
+            return True
+
+        self._last_tick_key[self.symbol] = key
+
+        return False
+
+    # ==================================================
+    # Background Workers
+    # ==================================================
+
+    def start_workers(self):
+
+        if (
+            self.queue_thread is None
+            or not self.queue_thread.is_alive()
+        ):
+
+            self.queue_thread = threading.Thread(
+                target=self._process_tick_queue,
+                name="CoinDCXTickQueue",
+                daemon=True,
+            )
+
+            self.queue_thread.start()
+
+            self.logger.info(
+                "Tick queue worker started."
+            )
+
+    # ==================================================
+
+    def stop_workers(self):
+
+        if (
+            self.queue_thread is not None
+            and self.queue_thread.is_alive()
+        ):
+
+            self.queue_thread.join(timeout=2)
+
+            self.logger.info(
+                "Tick queue worker stopped."
+            )
+
+    # ==================================================
+    # Statistics
+    # ==================================================
+
+    def get_statistics(self):
+
+        return {
+
+            "connected": self.connected,
+
+            "running": self.running,
+
+            "symbol": self.symbol,
+
+            "received_ticks": self.received_ticks,
+
+            "processed_ticks": self.processed_ticks,
+
+            "last_tick_time": self.last_tick_time,
+
+            "heartbeat_age": self.heartbeat_age(),
+
+            "subscriptions": list(
+                self.subscriptions
+            ),
+
+            "last_error": (
+                str(self.last_error)
+                if self.last_error
+                else None
+            ),
+
+        }
+
+    # ==================================================
+    # Shutdown
+    # ==================================================
+
+    def close(self):
+
+        self.disconnect()
+
+        self.stop_workers()
+
+        self._reset_runtime()
+
+        self.logger.info(
+            "CoinDCXWebSocket closed."
+        )
+
+    # ==================================================
+    # Context Manager
+    # ==================================================
+
+    def __enter__(self):
+
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc_value,
+        traceback,
+    ):
+
+        self.close()
+
+        return False
+
+    # ==================================================
+    # Object Representation
+    # ==================================================
+
+    def __repr__(self):
+
+        return (
+            f"{self.__class__.__name__}("
+            f"connected={self.connected}, "
+            f"running={self.running}, "
+            f"symbol='{self.symbol}'"
+            f")"
+        )
+
+    # ==================================================
+    # Diagnostics
+    # ==================================================
+
+    def health_report(self):
+
+        return {
+
+            "connected": self.connected,
+
+            "running": self.running,
+
+            "connection_healthy": self.is_connection_healthy(),
+
+            "symbol": self.symbol,
+
+            "received_ticks": self.received_ticks,
+
+            "processed_ticks": self.processed_ticks,
+
+            "queue_size": self.tick_queue.qsize(),
+
+            "last_tick_time": (
+                self.last_tick_time.isoformat()
+                if self.last_tick_time
+                else None
+            ),
+
+            "connection_time": (
+                self.connection_time.isoformat()
+                if self.connection_time
+                else None
+            ),
+
+            "last_error": (
+                str(self.last_error)
+                if self.last_error
+                else None
+            ),
+        }
+
+    # ==================================================
+
+    def log_health(self):
+
+        report = self.health_report()
+
+        self.logger.info(
+            "Health Report: %s",
+            report,
+        )
+
+    # ==================================================
+    # Debug Helpers
+    # ==================================================
+
+    def is_alive(self):
+
+        return (
+            self.running
+            and self.connected
+        )
+
+    def queue_size(self):
+
+        return self.tick_queue.qsize()
+
+    def current_candle(self):
+
+        return self.candle_builder.get_current_candle()
+
+    def last_closed_candle(self):
+
+        return self.candle_builder.get_last_closed_candle()
+
+    def print_statistics(self):
+
+        self.logger.info(
+            "Ticks: received=%d processed=%d queue=%d",
+            self.received_ticks,
+            self.processed_ticks,
+            self.tick_queue.qsize(),
+        )
