@@ -37,6 +37,10 @@ class LiquidityHunterWindow(QMainWindow):
         self.chart = ChartWidget()
         self.watchlist = WatchlistWidget()
 
+        self.controller.websocket.set_chart_widget(
+            self.chart
+        )
+
         # -----------------------------
         # Dashboard Scroll Area
         # -----------------------------

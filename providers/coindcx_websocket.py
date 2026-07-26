@@ -735,10 +735,31 @@ class CoinDCXWebSocket:
 
         self.last_tick_time = tick_time
 
+        # ----------------------------------------------
+        # Tick Callback
+        # ----------------------------------------------
+
         self._safe_callback(
             self.on_tick,
             tick,
         )
+
+        # ----------------------------------------------
+        # Live Current Candle Callback
+        # ----------------------------------------------
+
+        current_candle = self.candle_builder.get_current_candle()
+
+        if current_candle is not None:
+
+            self._safe_callback(
+                self.on_candle,
+                current_candle,
+            )
+
+        # ----------------------------------------------
+        # Closed Candle Callback
+        # ----------------------------------------------
 
         if closed_candle is not None:
 

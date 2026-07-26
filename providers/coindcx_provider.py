@@ -77,9 +77,14 @@ class CoinDCXProvider(BaseProvider):
             inplace=True
         )
 
-        df["Datetime"] = pd.to_datetime(
-            df["Datetime"],
-            unit="ms"
+        df["Datetime"] = (
+            pd.to_datetime(
+                df["Datetime"],
+                unit="ms",
+                utc=True
+            )
+            .dt.tz_convert("Asia/Kolkata")
+            .dt.tz_localize(None)
         )
 
         numeric_columns = [

@@ -23,12 +23,26 @@ class LiveCandleBuilder:
 
         self.last_closed_candle: Optional[Candle] = None
 
+        # Live Update Callback
+        self.live_update_callback = None
+
+        # Candle Close Callback
+        self.candle_close_callback = None
+
         print(f"Live Candle Builder Initialized ({timeframe})")
 
     def reset(self):
 
         self.current_candle = None
         self.last_closed_candle = None
+
+    def set_live_update_callback(self, callback):
+
+        self.live_update_callback = callback
+
+    def set_candle_close_callback(self, callback):
+
+        self.candle_close_callback = callback
 
     def get_current_candle(self):
 

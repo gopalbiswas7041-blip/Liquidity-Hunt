@@ -42,6 +42,11 @@ class Controller:
             self.on_live_tick
         )
 
+        # Live Candle callback
+        self.websocket.set_candle_callback(
+            self.on_live_candle
+        )
+
         # Connect
         self.websocket.connect(
             url="https://stream.coindcx.com",
@@ -219,3 +224,17 @@ class Controller:
         print("LIVE TICK RECEIVED")
         print(tick)
         print("=" * 60)
+
+    def on_live_candle(self, candle):
+
+        print("=" * 60)
+        print("LIVE CANDLE UPDATED")
+        print(candle)
+        print("=" * 60)
+
+        # Send live candle to chart
+        try:
+            if hasattr(self.websocket, "chart_widget") and self.websocket.chart_widget:
+                self.websocket.chart_widget.update_last_candle(candle)
+        except Exception as e:
+            print("Live Chart Update Error:", e)

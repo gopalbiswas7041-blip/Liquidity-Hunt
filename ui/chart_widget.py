@@ -1,12 +1,18 @@
 from pathlib import Path
 import json
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import (
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
 class ChartWidget(QWidget):
+
+    live_candle_signal = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -45,6 +51,10 @@ class ChartWidget(QWidget):
 
         layout.addWidget(title)
         layout.addWidget(self.webview)
+
+        self.live_candle_signal.connect(
+            self._update_last_candle_gui
+        )
 
     # ------------------------------------------------
 
@@ -94,6 +104,14 @@ class ChartWidget(QWidget):
 
             })
 
+        print("========== FIRST CANDLE ==========")
+        print(candles[0])
+
+        print("========== LAST CANDLE ==========")
+        print(candles[-1])
+
+        print("==================================")
+
         return candles
 
     # ------------------------------------------------
@@ -125,19 +143,46 @@ class ChartWidget(QWidget):
 
     # ------------------------------------------------
 
-    def update_last_candle(self, dataframe):
+    def update_last_candle(self, candle):
+
+        print("ChartWidget.update_last_candle() CALLED")
+        print(candle)
 
         if not self.chart_ready:
             return
 
-        candles = self._convert_dataframe(dataframe)
+        if candle is None:
+            return
 
-        if len(candles) == 0:
+        candle_data = {
+
+            "time": int(candle.timestamp.timestamp()),
+            "open": float(candle.open),
+            "high": float(candle.high),
+            "low": float(candle.low),
+            "close": float(candle.close)
+
+        }
+
+        print("========== LIVE CANDLE ==========")
+        print(candle_data)
+        print(type(candle_data["time"]))
+        print("================================")
+
+        self.live_candle_signal.emit(candle_data)
+
+    @Slot(dict)
+    def _update_last_candle_gui(self, candle_data):
+
+        print("GUI SLOT CALLED")
+        print(candle_data)
+
+        if not self.chart_ready:
             return
 
         js = (
             "window.updateLastCandle("
-            + json.dumps(candles[-1])
+            + json.dumps(candle_data)
             + ");"
         )
 

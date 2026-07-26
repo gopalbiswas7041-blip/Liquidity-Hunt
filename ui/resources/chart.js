@@ -4,6 +4,8 @@
 // ==========================================
 
 console.log("Liquidity Hunter Chart Loaded");
+console.log("LightweightCharts =", LightweightCharts);
+console.log("Version =", LightweightCharts.version);
 
 const chart = LightweightCharts.createChart(
     document.getElementById("chart"),
@@ -79,6 +81,9 @@ window.updateLastCandle = function(candle)
 {
     try
     {
+        console.log("Updating candle:", candle);
+        console.log("Last update time:", candle.time);
+        
         candleSeries.update(candle);
     }
     catch(err)
