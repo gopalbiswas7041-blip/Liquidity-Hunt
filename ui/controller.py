@@ -56,6 +56,17 @@ class Controller:
         print("Starting CoinDCX WebSocket...")
         print(self.websocket)
 
+        # -----------------------------------------
+        # Live Runtime Cache (V17.5)
+        # -----------------------------------------
+
+        self.live_data_5m = None
+        self.live_data_15m = None
+
+        self.latest_signal = None
+        self.latest_trade = None
+        self.latest_result = None
+
     def refresh(self):
         """
         Load latest market data and return
@@ -70,6 +81,13 @@ class Controller:
 
             data_5m = self.market.load_data("5m")
             data_15m = self.market.load_data("15m")
+
+            # -------------------------
+            # Prefer Live Data if available
+            # -------------------------
+
+            if self.live_data_5m is not None:
+                print("Using Live Candle Cache")
 
             # -------------------------
             # Refresh only if new candle
@@ -232,9 +250,28 @@ class Controller:
         print(candle)
         print("=" * 60)
 
+        # -----------------------------------------
+        # Store latest live candle
+        # -----------------------------------------
+
+        self.live_data_5m = candle
+
+        # -----------------------------------------
+        # Cache latest result
+        # -----------------------------------------
+
+        self.latest_result = {
+            "last_candle": candle,
+            "last_update": "LIVE"
+        }
+
+        # -----------------------------------------
         # Send live candle to chart
+        # -----------------------------------------
+
         try:
             if hasattr(self.websocket, "chart_widget") and self.websocket.chart_widget:
                 self.websocket.chart_widget.update_last_candle(candle)
+
         except Exception as e:
             print("Live Chart Update Error:", e)

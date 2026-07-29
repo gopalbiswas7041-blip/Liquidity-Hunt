@@ -112,11 +112,19 @@ class LiveCandleBuilder:
             self.current_candle.close = price
             self.current_candle.volume += volume
 
+            # Live Candle Update Callback
+            if self.live_update_callback:
+                self.live_update_callback(self.current_candle)
+
             return None
 
         closed = self.current_candle
 
         self.last_closed_candle = closed
+
+        # Candle Close Callback
+        if self.candle_close_callback:
+            self.candle_close_callback(closed)
 
         self.current_candle = Candle(
             timestamp=bucket,

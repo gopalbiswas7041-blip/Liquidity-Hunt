@@ -83,6 +83,9 @@ window.updateLastCandle = function(candle)
     {
         console.log("Updating candle:", candle);
         console.log("Last update time:", candle.time);
+        console.log("Type of time:", typeof candle.time);
+        console.log("Time value:", candle.time);
+        console.log("JSON:", JSON.stringify(candle));
         
         candleSeries.update(candle);
     }
