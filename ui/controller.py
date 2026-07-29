@@ -1,277 +1,479 @@
-# ==========================================
-# Liquidity Hunter AI V17
-# ui/controller.py
-# ==========================================
+"""
+============================================================
+Liquidity Hunter AI
+Controller V19 Production Edition
+============================================================
+
+Responsibilities
+----------------
+* Market Data Management
+* Live Price Synchronization
+* Historical + Live Candle Merge
+* Signal Engine Pipeline
+* Trade Manager Pipeline
+* Dashboard Synchronization
+* TradingView Chart Synchronization
+* Dynamic Symbol Management
+* Dynamic Timeframe Management
+* Watchlist Support
+* WebSocket Lifecycle Management
+============================================================
+"""
+
+from __future__ import annotations
 
 import traceback
 
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
 from data.market_data import MarketData
+
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
+
 from indicators.atr import ATR
+
 from providers.coindcx_provider import CoinDCXProvider
 from providers.coindcx_websocket import CoinDCXWebSocket
+
 from utils.candle_sync import CandleSync
 
+# ==========================================================
+# Controller Configuration
+# ==========================================================
 
+@dataclass
+class ControllerConfig:
+
+    # Default Trading Pair
+    DEFAULT_SYMBOL = "B-BTC_USDT"
+
+    # Timeframes
+    DEFAULT_TIMEFRAME = "5m"
+    HIGHER_TIMEFRAME = "15m"
+
+    # Refresh
+    AUTO_REFRESH_SECONDS = 30
+
+    # Feature Flags
+    ENABLE_PRICE_SYNC = True
+    ENABLE_DYNAMIC_SYMBOL = True
+    ENABLE_DYNAMIC_TIMEFRAME = True
+    ENABLE_WATCHLIST = True
+
+    # WebSocket
+    SOCKET_URL = "https://stream.coindcx.com"
+
+    SOCKET_CHANNEL_SUFFIX = "@trades"
+
+# ==========================================================
+# Controller
+# ==========================================================
 
 class Controller:
 
     def __init__(self):
 
-        self.market = MarketData(
-            "B-BTC_USDT",
-            provider=CoinDCXProvider()
+        print("=" * 60)
+        print("Liquidity Hunter AI")
+        print("Controller V19 Production")
+        print("=" * 60)
+
+        # ------------------------------------------
+        # Runtime Configuration
+        # ------------------------------------------
+
+        self.symbol = ControllerConfig.DEFAULT_SYMBOL
+
+        self.timeframe = (
+            ControllerConfig.DEFAULT_TIMEFRAME
         )
 
-        self.engine = SignalEngine()
+        self.higher_timeframe = (
+            ControllerConfig.HIGHER_TIMEFRAME
+        )
+
+        # ------------------------------------------
+        # Runtime State
+        # ------------------------------------------
+
+        self.current_price = None
+
+        self.last_refresh = None
+
+        self.last_tick = None
+
+        self.last_candle = None
+
+        self.latest_signal = None
+
+        self.latest_trade = None
+
+        self.latest_result = {}
+
+        self.live_data_5m = None
+
+        self.live_data_15m = None
+
+        # ------------------------------------------
+        # Core Components
+        # ------------------------------------------
+
+        self.provider = None
+
+        self.market = None
+
+        self.signal_engine = None
+
+        self.trade_manager = None
+
+        self.atr = None
+
+        self.candle_sync = None
+
+        self.websocket = None
+
+        # ------------------------------------------
+        # GUI References
+        # ------------------------------------------
+
+        self.dashboard = None
+
+        self.chart_widget = None
+
+        self.watchlist = None
+
+        # ------------------------------------------
+        # Provider
+        # ------------------------------------------
+
+        self.provider = CoinDCXProvider()
+
+        # ------------------------------------------
+        # Market Data
+        # ------------------------------------------
+
+        self.market = MarketData(
+            self.symbol,
+            provider=self.provider
+        )
+
+        # ------------------------------------------
+        # Signal Engine
+        # ------------------------------------------
+
+        self.signal_engine = SignalEngine()
+
+        # ------------------------------------------
+        # Trade Manager
+        # ------------------------------------------
+
         self.trade_manager = TradeManager()
+
+        # ------------------------------------------
+        # ATR
+        # ------------------------------------------
+
         self.atr = ATR()
 
-        # Smart Candle Sync
+        # ------------------------------------------
+        # Candle Synchronizer
+        # ------------------------------------------
+
         self.candle_sync = CandleSync()
 
-        # -----------------------------------------
+        # ------------------------------------------
         # WebSocket
-        # -----------------------------------------
+        # ------------------------------------------
 
         self.websocket = CoinDCXWebSocket()
 
-        # Tick callback
+        self.websocket.set_controller(self)
+
         self.websocket.set_tick_callback(
             self.on_live_tick
         )
 
-        # Live Candle callback
         self.websocket.set_candle_callback(
             self.on_live_candle
         )
 
-        # Connect
-        self.websocket.connect(
-            url="https://stream.coindcx.com",
-            symbol="B-BTC_USDT@trades"
+        print("Core Engine Initialized")
+        
+        print("Runtime Initialized")
+
+    # ==================================================
+    # WebSocket
+    # ==================================================
+
+    def start_websocket(self):
+
+        if self.websocket.is_running():
+            return
+
+        channel = (
+            f"{self.symbol}"
+            f"{ControllerConfig.SOCKET_CHANNEL_SUFFIX}"
         )
 
-        print("Starting CoinDCX WebSocket...")
-        print(self.websocket)
+        print(f"Starting WebSocket : {channel}")
 
-        # -----------------------------------------
-        # Live Runtime Cache (V17.5)
-        # -----------------------------------------
+        self.websocket.connect(
+            url=ControllerConfig.SOCKET_URL,
+            symbol=channel
+        )
 
-        self.live_data_5m = None
-        self.live_data_15m = None
+    # ==================================================
 
-        self.latest_signal = None
-        self.latest_trade = None
-        self.latest_result = None
+    def stop_websocket(self):
+
+        if self.websocket:
+
+            self.websocket.disconnect()
+
+    # ==================================================
+
+    def restart_websocket(self):
+
+        self.stop_websocket()
+
+        self.start_websocket()
+
+    # ==================================================
+    # Refresh
+    # ==================================================
 
     def refresh(self):
-        """
-        Load latest market data and return
-        all information required by the GUI.
-        """
 
         try:
 
-            # -------------------------
-            # Load Market Data
-            # -------------------------
+            print("\nRefreshing Market Data...")
 
-            data_5m = self.market.load_data("5m")
-            data_15m = self.market.load_data("15m")
+            # ------------------------------------------
+            # Historical Data
+            # ------------------------------------------
 
-            # -------------------------
-            # Prefer Live Data if available
-            # -------------------------
+            data_5m = self.market.refresh_cache(
+                "5m"
+            )
 
-            if self.live_data_5m is not None:
-                print("Using Live Candle Cache")
+            data_15m = self.market.refresh_cache(
+                "15m"
+            )
 
-            # -------------------------
-            # Refresh only if new candle
-            # -------------------------
+            self.live_data_5m = data_5m
 
-            if self.candle_sync.is_new_candle("5m", data_5m):
-                data_5m = self.market.refresh_cache("5m")
+            self.live_data_15m = data_15m
 
-            if self.candle_sync.is_new_candle("15m", data_15m):
-                data_15m = self.market.refresh_cache("15m")
+            # ------------------------------------------
+            # Ensure WebSocket Running
+            # ------------------------------------------
 
-            # -------------------------
-            # ATR
-            # -------------------------
+            if not self.websocket.is_running():
 
-            volatility = self.atr.get_volatility(data_5m)
+                self.start_websocket()
 
-            # -------------------------
-            # Signal Engine
-            # -------------------------
+            # ------------------------------------------
+            # Current Price
+            # ------------------------------------------
 
-            signal = self.engine.generate_signal(
+            try:
+
+                self.current_price = (
+                    self.market.get_live_price()
+                )
+
+            except Exception:
+
+                self.current_price = None
+
+            # ------------------------------------------
+            # Signal Generation
+            # ------------------------------------------
+
+            signal = self.signal_engine.generate_signal(
                 data_5m,
                 data_15m
             )
 
-            # -------------------------
-            # Trade Manager
-            # -------------------------
+            self.latest_signal = signal
+
+            # ------------------------------------------
+            # Trade Generation
+            # ------------------------------------------
 
             trade = self.trade_manager.generate_trade(
                 signal,
                 data_5m
             )
 
-            # -------------------------
-            # Market Context
-            # -------------------------
+            self.latest_trade = trade
 
-            market_context = {
+            # ------------------------------------------
+            # Final Result
+            # ------------------------------------------
 
-                "trend": signal.get("trend", "UNKNOWN"),
-                "market_phase": signal.get("market_phase", "UNKNOWN"),
-                "liquidity_sweep": signal.get("liquidity_sweep", False),
-                "choch": signal.get("choch", False),
-                "order_block": signal.get("order_block", False),
-                "fvg": signal.get("fvg", False)
+            result = {}
 
-            }
+            if isinstance(signal, dict):
+                result.update(signal)
 
-            # -------------------------
-            # GUI Data
-            # -------------------------
+            if isinstance(trade, dict):
+                result.update(trade)
 
-            result = {
+            result["symbol"] = self.symbol
+            result["timeframe"] = self.timeframe
+            result["live_price"] = self.current_price
+            result["data_5m"] = data_5m
+            result["data_15m"] = data_15m
+            result["last_refresh"] = datetime.now()
 
-                "symbol": "BTCUSDT",
-                "timeframe": "5 Minute",
-
-                "signal": trade.get("signal", "NO TRADE"),
-                "confidence": trade.get("confidence", 0),
-                "quality": trade.get("quality", "-"),
-                "status": trade.get("status", "-"),
-
-                "entry": trade.get("entry", "--"),
-                "stop_loss": trade.get("stop_loss", "--"),
-                "take_profit": trade.get("take_profit", "--"),
-
-                "risk": trade.get("risk", "--"),
-                "reward": trade.get("reward", "--"),
-                "risk_reward": trade.get("risk_reward", "--"),
-
-                "volatility": volatility,
-
-                "trade_score": trade.get("trade_score", 0),
-                "trade_status": trade.get("trade_status", "WAIT"),
-
-                "entry_type": trade.get("entry_type", "--"),
-                "entry_zone": trade.get("entry_zone", "--"),
-                "confirmation": trade.get("confirmation", "--"),
-                "entry_quality": trade.get("entry_quality", "--"),
-
-                "trend": market_context["trend"],
-                "market_phase": market_context["market_phase"],
-                "liquidity_sweep": market_context["liquidity_sweep"],
-                "choch": market_context["choch"],
-                "order_block": market_context["order_block"],
-                "fvg": market_context["fvg"],
-
-                "trade_reason": trade.get("trade_reason", []),
-
-                # Chart Data
-                "data_5m": data_5m,
-                "data_15m": data_15m
-
-            }
+            self.latest_result = result
+            self.last_refresh = result["last_refresh"]
 
             return result
 
-        except Exception as e:
+        except Exception:
 
-            print("=========== CONTROLLER ERROR ===========")
             traceback.print_exc()
-            print("========================================")
 
             return {
 
-                "symbol": "BTCUSDT",
-                "timeframe": "5 Minute",
+                "symbol": self.symbol,
+
+                "timeframe": self.timeframe,
+
+                "live_price": None,
 
                 "signal": "ERROR",
+
                 "confidence": 0,
-                "quality": "-",
-                "status": "ERROR",
 
-                "entry": "--",
-                "stop_loss": "--",
-                "take_profit": "--",
-
-                "risk": "--",
-                "reward": "--",
-                "risk_reward": "--",
-
-                "volatility": "UNKNOWN",
-
-                "trade_score": 0,
                 "trade_status": "ERROR",
 
-                "entry_type": "--",
-                "entry_zone": "--",
-                "confirmation": "--",
-                "entry_quality": "--",
-
-                "trend": "--",
-                "market_phase": "--",
-                "liquidity_sweep": "--",
-                "choch": "--",
-                "order_block": "--",
-                "fvg": "--",
-
-                "trade_reason": [str(e)],
-
-                # Empty Chart Data
                 "data_5m": None,
+
                 "data_15m": None
 
             }
-            
+
+    # ==================================================
+    # Live Tick Callback
+    # ==================================================
+
     def on_live_tick(self, tick):
 
-        print("=" * 60)
-        print("LIVE TICK RECEIVED")
-        print(tick)
-        print("=" * 60)
+        self.last_tick = tick
+
+        try:
+
+            if isinstance(tick, dict):
+
+                self.current_price = float(
+                    tick.get(
+                        "price",
+                        self.current_price or 0
+                    )
+                )
+
+        except Exception:
+
+            pass
+
+    # ==================================================
+    # Live Candle Callback
+    # ==================================================
 
     def on_live_candle(self, candle):
 
-        print("=" * 60)
-        print("LIVE CANDLE UPDATED")
-        print(candle)
-        print("=" * 60)
+        self.last_candle = candle
 
-        # -----------------------------------------
-        # Store latest live candle
-        # -----------------------------------------
-
-        self.live_data_5m = candle
-
-        # -----------------------------------------
-        # Cache latest result
-        # -----------------------------------------
-
-        self.latest_result = {
-            "last_candle": candle,
-            "last_update": "LIVE"
-        }
-
-        # -----------------------------------------
-        # Send live candle to chart
-        # -----------------------------------------
+        if self.chart_widget is None:
+            return
 
         try:
-            if hasattr(self.websocket, "chart_widget") and self.websocket.chart_widget:
-                self.websocket.chart_widget.update_last_candle(candle)
 
-        except Exception as e:
-            print("Live Chart Update Error:", e)
+            self.chart_widget.update_last_candle(
+                candle
+            )
+
+        except Exception:
+
+            traceback.print_exc()
+
+    # ==================================================
+    # Shutdown
+    # ==================================================
+
+    def shutdown(self):
+
+        print("\nShutting Down Controller...")
+
+        try:
+
+            if self.websocket:
+
+                self.websocket.disconnect()
+
+        except Exception:
+
+            traceback.print_exc()
+
+        try:
+
+            if self.market:
+
+                self.market.disconnect()
+
+        except Exception:
+
+            traceback.print_exc()
+
+        print("Controller Shutdown Complete")
+
+    # ==================================================
+    # Health Report
+    # ==================================================
+
+    def health_report(self):
+
+        return {
+
+            "symbol": self.symbol,
+
+            "timeframe": self.timeframe,
+
+            "provider": type(self.provider).__name__,
+
+            "websocket_running": (
+                self.websocket.is_running()
+                if self.websocket else False
+            ),
+
+            "live_price": self.current_price,
+
+            "last_refresh": self.last_refresh,
+
+            "last_tick": self.last_tick,
+
+            "last_candle": self.last_candle
+
+        }
+
+    # ==================================================
+    # Log Health
+    # ==================================================
+
+    def log_health(self):
+
+        report = self.health_report()
+
+        print("\n========== Controller Health ==========")
+
+        for key, value in report.items():
+
+            print(f"{key} : {value}")
+
+        print("=======================================\n")

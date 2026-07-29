@@ -67,6 +67,14 @@ class LiquidityHunterWindow(QMainWindow):
 
         self.watchlist = WatchlistWidget()
 
+        # ============================================
+        # Connect Controller -> UI
+        # ============================================
+
+        self.controller.chart_widget = self.chart
+        self.controller.dashboard = self.dashboard
+        self.controller.watchlist = self.watchlist
+
         # Connect Live Chart
         self.controller.websocket.set_chart_widget(
             self.chart

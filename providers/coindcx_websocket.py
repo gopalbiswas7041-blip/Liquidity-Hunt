@@ -648,6 +648,8 @@ class CoinDCXWebSocket:
 
     def _handle_market_message(self, data):
 
+        self.logger.info("NEW TRADE EVENT RECEIVED")
+
         self.received_ticks += 1
 
         self.update_heartbeat()
@@ -656,6 +658,8 @@ class CoinDCXWebSocket:
             return
 
         try:
+
+            self.logger.info("Raw Tick : %s", data)
 
             if isinstance(data, dict) and "data" in data:
                 data = json.loads(data["data"])
@@ -713,6 +717,8 @@ class CoinDCXWebSocket:
 
     def _process_tick(self, tick):
 
+        self.logger.info("PROCESSING TICK")
+
         price = self.extract_price(tick)
 
         if self.is_duplicate_tick(tick):
@@ -751,6 +757,11 @@ class CoinDCXWebSocket:
         current_candle = self.candle_builder.get_current_candle()
 
         if current_candle is not None:
+
+            self.logger.info(
+                "Current Candle : %s",
+                current_candle,
+            )
 
             self._safe_callback(
                 self.on_candle,
