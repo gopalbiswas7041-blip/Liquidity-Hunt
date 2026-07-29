@@ -60,6 +60,8 @@ class ChartWidget(QWidget):
 
     def _on_chart_loaded(self, ok):
 
+        print(">>> _on_chart_loaded() CALLED <<<")
+
         self.chart_ready = ok
 
         print("===================================")
@@ -92,6 +94,12 @@ class ChartWidget(QWidget):
         candles = []
 
         for index, row in df.iterrows():
+            print(
+                "HIST DEBUG:",
+                index,
+                index.tzinfo,
+                index.timestamp(),
+)
 
             candles.append({
 
@@ -153,6 +161,13 @@ class ChartWidget(QWidget):
 
         if candle is None:
             return
+
+        print(
+            "LIVE DEBUG:",
+            candle.timestamp,
+            candle.timestamp.tzinfo,
+            candle.timestamp.timestamp(),
+        )
 
         candle_data = {
 

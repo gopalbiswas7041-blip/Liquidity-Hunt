@@ -79,21 +79,15 @@ window.setChartData = function(candles)
 // Live Update
 window.updateLastCandle = function(candle)
 {
-    try
-    {
-        console.log("Updating candle:", candle);
-        console.log("Last update time:", candle.time);
-        console.log("Type of time:", typeof candle.time);
-        console.log("Time value:", candle.time);
-        console.log("JSON:", JSON.stringify(candle));
-        
-        candleSeries.update(candle);
-    }
-    catch(err)
-    {
-        console.error(err);
-    }
-};
+    console.log(JSON.stringify(candle));
+
+    console.log("Is object:", candle);
+    console.log("Time value:", candle.time);
+    console.log("Time type:", Object.prototype.toString.call(candle.time));
+    console.log("Keys:", Object.keys(candle));
+
+    candleSeries.update(candle);
+}
 
 // Resize
 window.addEventListener("resize", () =>
