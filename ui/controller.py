@@ -237,9 +237,38 @@ class Controller:
 
     def restart_websocket(self):
 
-        self.stop_websocket()
+        if hasattr(self, "websocket") and self.websocket:
 
-        self.start_websocket()
+            self.websocket.stop()
+
+            self.websocket.start()
+
+
+    # ==================================================
+    # Change Timeframe
+    # ==================================================
+
+    def change_timeframe(self, timeframe):
+
+        print("BUTTON CLICKED :", timeframe)
+
+        if timeframe == self.timeframe:
+            return
+
+        print(f"\nChanging Timeframe : {timeframe}")
+
+        self.timeframe = timeframe
+
+        # Change Live Candle Builder Timeframe
+        self.websocket.set_timeframe(
+            timeframe
+        )
+
+        # Clear Historical Data Cache
+        self.market.clear_cache()
+
+        # Reload Market Data
+        self.refresh()
 
     # ==================================================
     # Refresh
@@ -256,11 +285,11 @@ class Controller:
             # ------------------------------------------
 
             data_5m = self.market.refresh_cache(
-                "5m"
+            self.timeframe
             )
 
             data_15m = self.market.refresh_cache(
-                "15m"
+            self.higher_timeframe
             )
 
             self.live_data_5m = data_5m
@@ -332,6 +361,12 @@ class Controller:
 
             self.latest_result = result
             self.last_refresh = result["last_refresh"]
+
+            if self.chart_widget is not None:
+
+                self.chart_widget.set_chart_data(
+                    data_5m
+                )
 
             return result
 

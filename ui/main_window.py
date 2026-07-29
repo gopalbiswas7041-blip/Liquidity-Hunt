@@ -301,6 +301,12 @@ class LiquidityHunterWindow(QMainWindow):
                 QSizePolicy.Fixed
             )
 
+            # Timeframe Button Click
+            btn.clicked.connect(
+                lambda checked=False, tf=tf:
+                self.controller.change_timeframe(tf)
+            )
+
             self.tf_buttons.append(btn)
 
             self.timeframe_layout.addWidget(
@@ -398,7 +404,12 @@ class LiquidityHunterWindow(QMainWindow):
 
         print("Returned Keys :", list(data.keys()))
 
-        data_5m = data.get("data_5m")
+        data_5m = data.get(
+            f"data_{self.controller.timeframe}"
+        )
+
+        if data_5m is None:
+            data_5m = data.get("data_5m")
 
         print("data_5m Type :", type(data_5m))
         print("data_5m None :", data_5m is None)

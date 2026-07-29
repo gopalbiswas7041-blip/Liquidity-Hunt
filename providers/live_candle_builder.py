@@ -36,6 +36,23 @@ class LiveCandleBuilder:
         self.current_candle = None
         self.last_closed_candle = None
 
+    # ===============================
+    # Change Timeframe
+    # ===============================
+
+    def set_timeframe(self, timeframe):
+
+        if self.timeframe == timeframe:
+            return
+
+        print(
+            f"Live Candle Timeframe Changed : {self.timeframe} -> {timeframe}"
+        )
+
+        self.timeframe = timeframe
+
+        self.reset()
+
     def set_live_update_callback(self, callback):
 
         self.live_update_callback = callback
@@ -54,26 +71,58 @@ class LiveCandleBuilder:
 
     def _get_bucket_time(self, timestamp: datetime):
 
-        if self.timeframe == "1m":
-            return timestamp.replace(second=0, microsecond=0)
+        timeframe_map = {
+            "1m": 1,
+            "3m": 3,
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+        }
 
-        elif self.timeframe == "5m":
-            minute = (timestamp.minute // 5) * 5
+        if self.timeframe in timeframe_map:
+
+            minutes = timeframe_map[self.timeframe]
+
+            minute = (timestamp.minute // minutes) * minutes
+
             return timestamp.replace(
                 minute=minute,
                 second=0,
                 microsecond=0
             )
 
-        elif self.timeframe == "15m":
-            minute = (timestamp.minute // 15) * 15
+        elif self.timeframe == "1H":
+
             return timestamp.replace(
-                minute=minute,
+                minute=0,
                 second=0,
                 microsecond=0
             )
 
-        return timestamp.replace(second=0, microsecond=0)
+        elif self.timeframe == "4H":
+
+            hour = (timestamp.hour // 4) * 4
+
+            return timestamp.replace(
+                hour=hour,
+                minute=0,
+                second=0,
+                microsecond=0
+            )
+
+        elif self.timeframe == "1D":
+
+            return timestamp.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0
+            )
+
+        return timestamp.replace(
+            second=0,
+            microsecond=0
+        )
 
     def update_tick(
         self,

@@ -270,6 +270,24 @@ class CoinDCXWebSocket:
         self.chart_widget = chart_widget
 
     # ==================================================
+    # Timeframe
+    # ==================================================
+
+    def set_timeframe(
+        self,
+        timeframe,
+    ):
+
+        self.logger.info(
+            "Changing Live Candle Timeframe : %s",
+            timeframe,
+        )
+
+        self.candle_builder.set_timeframe(
+            timeframe
+        )
+
+    # ==================================================
     # Status
     # ==================================================
 
