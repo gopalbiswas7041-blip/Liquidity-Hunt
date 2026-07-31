@@ -44,11 +44,13 @@ class MarketData:
         print(f"Symbol: {self.symbol}")
         print(f"Timeframe: {timeframe}")
 
-        if not force_refresh and timeframe in self.cache:
+        cache_key = (self.symbol, timeframe)
+
+        if not force_refresh and cache_key in self.cache:
 
             print("Using Cached Data")
 
-            return self.cache[timeframe]
+            return self.cache[cache_key]
 
         api_timeframe = self._get_api_timeframe(
             timeframe
@@ -59,7 +61,11 @@ class MarketData:
             api_timeframe
         )
 
-        self.cache[timeframe] = data
+        if data.empty:
+            print("No candle data received.")
+            return data
+
+        self.cache[cache_key] = data
 
         print(data.tail())
 
@@ -84,4 +90,5 @@ class MarketData:
 
     def disconnect(self):
 
+        self.clear_cache()
         self.provider.disconnect()

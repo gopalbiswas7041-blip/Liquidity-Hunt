@@ -1,9 +1,31 @@
+"""
+Liquidity Hunter AI
+Version : V19.3 Stable Production
+File    : providers/live_candle_builder.py
+
+Production Features
+-------------------
+- Full timeframe normalization
+- Extended timeframe support
+- Stable bucket engine
+- Live update callback
+- Candle close callback
+- Safe state management
+- Future-ready architecture
+"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 
-@dataclass
+# ==========================================================
+# Candle Model
+# ==========================================================
+
+@dataclass(slots=True)
 class Candle:
     timestamp: datetime
     open: float
@@ -13,44 +35,111 @@ class Candle:
     volume: float = 0.0
 
 
+# ==========================================================
+# Live Candle Builder
+# ==========================================================
+
 class LiveCandleBuilder:
 
-    def __init__(self, timeframe="1m"):
+    # Canonical timeframe names
+    _TIMEFRAME_ALIAS: Dict[str, str] = {
+        "1m": "1m",
+        "3m": "3m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "2h": "2h",
+        "4h": "4h",
+        "6h": "6h",
+        "8h": "8h",
+        "12h": "12h",
+        "1d": "1d",
+        "1w": "1w",
 
-        self.timeframe = timeframe
+        # Legacy compatibility
+        "1H": "1h",
+        "2H": "2h",
+        "4H": "4h",
+        "6H": "6h",
+        "8H": "8h",
+        "12H": "12h",
+        "1D": "1d",
+        "1W": "1w",
+    }
+
+    def __init__(self, timeframe: str = "1m"):
+
+        self.timeframe = self._normalize_timeframe(timeframe)
 
         self.current_candle: Optional[Candle] = None
-
         self.last_closed_candle: Optional[Candle] = None
 
-        # Live Update Callback
-        self.live_update_callback = None
+        self.live_update_callback: Optional[
+            Callable[[Candle], None]
+        ] = None
 
-        # Candle Close Callback
-        self.candle_close_callback = None
+        self.candle_close_callback: Optional[
+            Callable[[Candle], None]
+        ] = None
 
-        print(f"Live Candle Builder Initialized ({timeframe})")
+        self._paused = False
+
+        print(
+            f"Live Candle Builder Initialized "
+            f"({self.timeframe})"
+        )
+
+    # ======================================================
+    # Internal Helpers
+    # ======================================================
+
+    @classmethod
+    def _normalize_timeframe(cls, timeframe: str) -> str:
+
+        if timeframe is None:
+            return "1m"
+
+        return cls._TIMEFRAME_ALIAS.get(
+            timeframe,
+            timeframe.lower()
+        )
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def pause(self):
+
+        self._paused = True
+
+    def resume(self):
+
+        self._paused = False
 
     def reset(self):
 
         self.current_candle = None
         self.last_closed_candle = None
 
-    # ===============================
-    # Change Timeframe
-    # ===============================
+    # ======================================================
+    # Public API
+    # ======================================================
 
-    def set_timeframe(self, timeframe):
+    def set_timeframe(self, timeframe: str):
 
-        if self.timeframe == timeframe:
+        timeframe = self._normalize_timeframe(timeframe)
+
+        if timeframe == self.timeframe:
             return
 
         print(
-            f"Live Candle Timeframe Changed : {self.timeframe} -> {timeframe}"
+            f"Live Candle Timeframe Changed : "
+            f"{self.timeframe} -> {timeframe}"
         )
 
+        # Controller/WebSocket will pause updates before calling this.
         self.timeframe = timeframe
-
         self.reset()
 
     def set_live_update_callback(self, callback):
@@ -69,119 +158,253 @@ class LiveCandleBuilder:
 
         return self.last_closed_candle
 
+    # ======================================================
+    # Bucket Helpers
+    # ======================================================
+
+    @staticmethod
+    def _floor_minutes(timestamp: datetime, minutes: int):
+
+        minute = (timestamp.minute // minutes) * minutes
+
+        return timestamp.replace(
+            minute=minute,
+            second=0,
+            microsecond=0,
+        )
+
+    @staticmethod
+    def _floor_hours(timestamp: datetime, hours: int):
+
+        hour = (timestamp.hour // hours) * hours
+
+        return timestamp.replace(
+            hour=hour,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
     def _get_bucket_time(self, timestamp: datetime):
 
-        timeframe_map = {
-            "1m": 1,
-            "3m": 3,
-            "5m": 5,
-            "15m": 15,
-            "30m": 30,
-        }
+        tf = self.timeframe
 
-        if self.timeframe in timeframe_map:
+        # Minute Timeframes
+        if tf == "1m":
+            return self._floor_minutes(timestamp, 1)
 
-            minutes = timeframe_map[self.timeframe]
+        if tf == "3m":
+            return self._floor_minutes(timestamp, 3)
 
-            minute = (timestamp.minute // minutes) * minutes
+        if tf == "5m":
+            return self._floor_minutes(timestamp, 5)
 
-            return timestamp.replace(
-                minute=minute,
-                second=0,
-                microsecond=0
-            )
+        if tf == "15m":
+            return self._floor_minutes(timestamp, 15)
 
-        elif self.timeframe == "1H":
+        if tf == "30m":
+            return self._floor_minutes(timestamp, 30)
 
-            return timestamp.replace(
-                minute=0,
-                second=0,
-                microsecond=0
-            )
+        # Hour Timeframes
+        if tf == "1h":
+            return self._floor_hours(timestamp, 1)
 
-        elif self.timeframe == "4H":
+        if tf == "2h":
+            return self._floor_hours(timestamp, 2)
 
-            hour = (timestamp.hour // 4) * 4
+        if tf == "4h":
+            return self._floor_hours(timestamp, 4)
 
-            return timestamp.replace(
-                hour=hour,
-                minute=0,
-                second=0,
-                microsecond=0
-            )
+        if tf == "6h":
+            return self._floor_hours(timestamp, 6)
 
-        elif self.timeframe == "1D":
+        if tf == "8h":
+            return self._floor_hours(timestamp, 8)
+
+        if tf == "12h":
+            return self._floor_hours(timestamp, 12)
+
+        # Daily
+        if tf == "1d":
 
             return timestamp.replace(
                 hour=0,
                 minute=0,
                 second=0,
-                microsecond=0
+                microsecond=0,
             )
 
+        # Weekly (Monday start)
+        if tf == "1w":
+
+            start = timestamp.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+            return start.replace(
+                day=start.day - start.weekday()
+            )
+
+        # Fallback
         return timestamp.replace(
             second=0,
-            microsecond=0
+            microsecond=0,
         )
+
+    # ======================================================
+    # Live Tick Processing
+    # ======================================================
 
     def update_tick(
         self,
         price: float,
         volume: float,
-        timestamp: datetime
+        timestamp: datetime,
     ):
 
+        # Ignore ticks while paused
+        if self._paused:
+            return None
+
         bucket = self._get_bucket_time(timestamp)
+
+        # ----------------------------------------------
+        # First candle
+        # ----------------------------------------------
 
         if self.current_candle is None:
 
             self.current_candle = Candle(
                 timestamp=bucket,
-                open=price,
-                high=price,
-                low=price,
-                close=price,
-                volume=volume
+                open=float(price),
+                high=float(price),
+                low=float(price),
+                close=float(price),
+                volume=float(volume),
             )
 
-            return None
-
-        if bucket == self.current_candle.timestamp:
-
-            self.current_candle.high = max(
-                self.current_candle.high,
-                price
-            )
-
-            self.current_candle.low = min(
-                self.current_candle.low,
-                price
-            )
-
-            self.current_candle.close = price
-            self.current_candle.volume += volume
-
-            # Live Candle Update Callback
-            if self.live_update_callback:
+            if self.live_update_callback is not None:
                 self.live_update_callback(self.current_candle)
 
             return None
 
-        closed = self.current_candle
+        # ----------------------------------------------
+        # Same candle
+        # ----------------------------------------------
 
-        self.last_closed_candle = closed
+        if bucket == self.current_candle.timestamp:
 
-        # Candle Close Callback
-        if self.candle_close_callback:
-            self.candle_close_callback(closed)
+            candle = self.current_candle
+
+            candle.high = max(candle.high, float(price))
+            candle.low = min(candle.low, float(price))
+            candle.close = float(price)
+            candle.volume += float(volume)
+
+            if self.live_update_callback is not None:
+                self.live_update_callback(candle)
+
+            return None
+
+        # ----------------------------------------------
+        # Candle Closed
+        # ----------------------------------------------
+
+        closed_candle = self.current_candle
+
+        self.last_closed_candle = closed_candle
+
+        if self.candle_close_callback is not None:
+            self.candle_close_callback(closed_candle)
+
+        # ----------------------------------------------
+        # Create Next Candle
+        # ----------------------------------------------
 
         self.current_candle = Candle(
             timestamp=bucket,
-            open=price,
-            high=price,
-            low=price,
-            close=price,
-            volume=volume
+            open=float(price),
+            high=float(price),
+            low=float(price),
+            close=float(price),
+            volume=float(volume),
         )
 
-        return closed
+        if self.live_update_callback is not None:
+            self.live_update_callback(self.current_candle)
+
+        return closed_candle
+
+    # ======================================================
+    # State Helpers
+    # ======================================================
+
+    def has_active_candle(self) -> bool:
+
+        return self.current_candle is not None
+
+    def clear_current_candle(self):
+
+        self.current_candle = None
+
+    def clear_last_closed_candle(self):
+
+        self.last_closed_candle = None
+
+    def snapshot(self):
+
+        """
+        Returns a lightweight snapshot of the
+        current builder state.
+        """
+
+        return {
+            "timeframe": self.timeframe,
+            "paused": self._paused,
+            "has_current_candle": self.current_candle is not None,
+            "has_last_closed_candle": (
+                self.last_closed_candle is not None
+            ),
+        }
+
+    # ======================================================
+    # Callback Management
+    # ======================================================
+
+    def remove_live_update_callback(self):
+
+        self.live_update_callback = None
+
+    def remove_candle_close_callback(self):
+
+        self.candle_close_callback = None
+
+    # ======================================================
+    # Public Status
+    # ======================================================
+
+    def get_status(self):
+
+        return {
+            "timeframe": self.timeframe,
+            "paused": self._paused,
+            "current_candle": self.current_candle,
+            "last_closed_candle": self.last_closed_candle,
+        }
+
+    # ======================================================
+    # String Representation
+    # ======================================================
+
+    def __repr__(self):
+
+        return (
+            "LiveCandleBuilder("
+            f"timeframe='{self.timeframe}', "
+            f"paused={self._paused}, "
+            f"current={self.current_candle is not None}"
+            ")"
+        )

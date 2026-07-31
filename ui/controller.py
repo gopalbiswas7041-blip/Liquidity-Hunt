@@ -237,11 +237,20 @@ class Controller:
 
     def restart_websocket(self):
 
-        if hasattr(self, "websocket") and self.websocket:
+        if not self.websocket:
+            return
 
-            self.websocket.stop()
+        self.websocket.disconnect()
 
-            self.websocket.start()
+        channel = (
+            f"{self.symbol}"
+            f"{ControllerConfig.SOCKET_CHANNEL_SUFFIX}"
+        )
+
+        self.websocket.connect(
+            url=ControllerConfig.SOCKET_URL,
+            symbol=channel
+        )
 
 
     # ==================================================
