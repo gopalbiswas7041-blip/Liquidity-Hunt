@@ -20,6 +20,9 @@ class ChartWidget(QWidget):
         self.chart_ready = False
         self.pending_candles = None
 
+        # NEW
+        self.pending_signal = None
+
         layout = QVBoxLayout(self)
 
         title = QLabel("📈 LIVE MARKET CHART")
@@ -56,6 +59,9 @@ class ChartWidget(QWidget):
             self._update_last_candle_gui
         )
 
+        print("CONNECT DONE")
+        print(self._update_last_candle_gui)
+
     # ------------------------------------------------
 
     def _on_chart_loaded(self, ok):
@@ -76,6 +82,19 @@ class ChartWidget(QWidget):
             self.pending_candles = None
 
             self.set_chart_data(data)
+
+        # -------------------------------
+        # NEW
+        # Send pending AI signal
+        # -------------------------------
+        if ok and self.pending_signal is not None:
+
+            print("Sending Pending Trade Signal...")
+
+            signal = self.pending_signal
+            self.pending_signal = None
+
+            self.show_trade_signal(signal)
 
         else:
 
@@ -184,21 +203,78 @@ class ChartWidget(QWidget):
         print(type(candle_data["time"]))
         print("================================")
 
+        print(type(self))
+        print(type(self.live_candle_signal))
+        print(self.live_candle_signal)
+
         self.live_candle_signal.emit(candle_data)
 
     @Slot(dict)
     def _update_last_candle_gui(self, candle_data):
 
-        print("GUI SLOT CALLED")
-        print(candle_data)
+        try:
 
-        if not self.chart_ready:
-            return
+            print("GUI SLOT CALLED")
+            print(candle_data)
 
-        js = (
-            "window.updateLastCandle("
-            + json.dumps(candle_data)
-            + ");"
-        )
+            if not self.chart_ready:
+                return
 
-        self.webview.page().runJavaScript(js)
+            js = (
+                "window.updateLastCandle("
+                + json.dumps(candle_data)
+                + ");"
+            )
+
+            print(js)
+
+            self.webview.page().runJavaScript(
+                js,
+                lambda result: print("JS Returned:", result)
+            )
+
+        except Exception as e:
+
+            import traceback
+            traceback.print_exc()
+
+    # ------------------------------------------------
+    # AI Trade Signal Overlay
+    # ------------------------------------------------
+
+    def show_trade_signal(self, signal):
+
+        try:
+
+            # ----------------------------
+            # NEW
+            # ----------------------------
+            if not self.chart_ready:
+
+                print("Chart Not Ready -> Saving Trade Signal")
+
+                self.pending_signal = signal
+
+                return
+
+            js = (
+                "window.showTradeSignal("
+                + json.dumps(signal)
+                + ");"
+            )
+
+            print("Sending Trade Signal To JS")
+            print(signal)
+
+            self.webview.page().runJavaScript(
+                js,
+                lambda result: print(
+                    "Trade Signal JS Returned:",
+                    result
+                )
+            )
+
+        except Exception:
+
+            import traceback
+            traceback.print_exc()

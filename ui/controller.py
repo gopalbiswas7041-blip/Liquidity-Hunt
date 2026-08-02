@@ -39,6 +39,7 @@ from providers.coindcx_provider import CoinDCXProvider
 from providers.coindcx_websocket import CoinDCXWebSocket
 
 from utils.candle_sync import CandleSync
+from ui.chart_overlay import ChartOverlay
 
 # ==========================================================
 # Controller Configuration
@@ -142,6 +143,8 @@ class Controller:
         self.dashboard = None
 
         self.chart_widget = None
+
+        self.chart_overlay = None
 
         self.watchlist = None
 
@@ -373,9 +376,31 @@ class Controller:
 
             if self.chart_widget is not None:
 
-                self.chart_widget.set_chart_data(
-                    data_5m
-                )
+                # Historical Chart
+                self.chart_widget.set_chart_data(data_5m)
+
+                # ------------------------------------------
+                # AI Trade Signal Overlay
+                # ------------------------------------------
+
+                try:
+
+                    if (
+                        result.get("trade_status") == "READY"
+                        and result.get("trade_direction") in ["BUY", "SELL"]
+                    ):
+
+                        print("Sending Trade Signal To JS")
+
+                        signal = {
+                            "time": int(data_5m.index[-1].timestamp()),
+                            "direction": result["trade_direction"]
+                        }
+
+                        self.chart_widget.show_trade_signal(signal)
+
+                except Exception:
+                    traceback.print_exc()
 
             return result
 

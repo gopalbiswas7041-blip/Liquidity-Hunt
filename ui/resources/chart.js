@@ -1,16 +1,23 @@
 // ==========================================
-// Liquidity Hunter AI V18
+// Liquidity Hunter AI V20
 // chart.js
 // ==========================================
+
+alert("NEW chart.js loaded");
 
 console.log("Liquidity Hunter Chart Loaded");
 console.log("LightweightCharts =", LightweightCharts);
 console.log("Version =", LightweightCharts.version);
 
+alert("Version = " + LightweightCharts.version);
+
+// ==========================================
+// Create Chart
+// ==========================================
+
 const chart = LightweightCharts.createChart(
     document.getElementById("chart"),
     {
-
         layout: {
             background: {
                 color: "#131722"
@@ -19,15 +26,12 @@ const chart = LightweightCharts.createChart(
         },
 
         grid: {
-
             vertLines: {
                 color: "#2B2B43"
             },
-
             horzLines: {
                 color: "#363C4E"
             }
-
         },
 
         crosshair: {
@@ -39,27 +43,51 @@ const chart = LightweightCharts.createChart(
         },
 
         timeScale: {
-
             borderColor: "#444",
-
             timeVisible: true,
-
             secondsVisible: false
-
         },
 
         autoSize: true
-
     }
 );
 
+// ==========================================
 // Candlestick Series
+// ==========================================
+
 const candleSeries = chart.addSeries(
     LightweightCharts.CandlestickSeries,
     {}
 );
 
-// Python → JavaScript
+// ==========================================
+// AI Overlay Series
+// ==========================================
+
+const signalSeries = chart.addSeries(
+    LightweightCharts.LineSeries,
+    {
+        color: "#FFD700",
+        lineWidth: 0,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false
+    }
+);
+
+const tradeMarkers = [];
+
+const markerPlugin =
+    LightweightCharts.createSeriesMarkers(
+        candleSeries,
+        []
+    );
+
+// ==========================================
+// Historical Data
+// ==========================================
+
 window.setChartData = function(candles)
 {
     try
@@ -76,28 +104,87 @@ window.setChartData = function(candles)
     }
 };
 
-// Live Update
+// ==========================================
+// Live Candle Update
+// ==========================================
+
 window.updateLastCandle = function(candle)
 {
-    console.log(JSON.stringify(candle));
+    console.log("JS updateLastCandle CALLED");
+    console.log(candle);
 
-    console.log("Is object:", candle);
-    console.log("Time value:", candle.time);
-    console.log("Time type:", Object.prototype.toString.call(candle.time));
-    console.log("Keys:", Object.keys(candle));
+    console.log("TIME =", candle.time);
+    console.log("TYPE =", typeof candle.time);
+    console.log("CANDLE =", JSON.stringify(candle));
+    console.log("LAST UPDATE");
 
-    candleSeries.update(candle);
-}
+    try
+    {
+        candleSeries.update(candle);
 
+        console.log("UPDATE SUCCESS");
+    }
+    catch(err)
+    {
+        console.error("UPDATE FAILED");
+        console.error(err);
+    }
+};
+
+// ==========================================
+// AI Trade Signal Overlay
+// ==========================================
+
+window.showTradeSignal = function(signal)
+{
+    try
+    {
+        console.log("AI SIGNAL RECEIVED");
+        console.log(signal);
+
+        tradeMarkers.push({
+
+            time: signal.time,
+
+            position:
+                signal.direction === "BUY"
+                ? "belowBar"
+                : "aboveBar",
+
+            color:
+                signal.direction === "BUY"
+                ? "#00FF00"
+                : "#FF0000",
+
+            shape:
+                signal.direction === "BUY"
+                ? "arrowUp"
+                : "arrowDown",
+
+            text: signal.direction
+
+        });
+
+        markerPlugin.setMarkers(tradeMarkers);
+
+        console.log("Signal Marker Added");
+    }
+    catch(err)
+    {
+        console.error("Overlay Error");
+        console.error(err);
+    }
+};
+
+// ==========================================
 // Resize
+// ==========================================
+
 window.addEventListener("resize", () =>
 {
     chart.applyOptions({
-
         width: window.innerWidth,
-
         height: window.innerHeight
-
     });
 });
 

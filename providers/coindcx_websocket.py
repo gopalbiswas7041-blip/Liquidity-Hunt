@@ -15,11 +15,11 @@ Provider: CoinDCX Socket.IO
 from __future__ import annotations
 
 import logging
+from utils.logger import get_logger
 import threading
 import time
 import queue
 import json
-
 from datetime import datetime
 from typing import Callable
 from typing import Optional
@@ -72,7 +72,7 @@ class CoinDCXWebSocket:
         # Logger
         # ----------------------------------------------
 
-        self.logger = logging.getLogger(
+        self.logger = get_logger(
             self.__class__.__name__
         )
 
@@ -666,7 +666,7 @@ class CoinDCXWebSocket:
 
     def _handle_market_message(self, data):
 
-        self.logger.info("NEW TRADE EVENT RECEIVED")
+        self.logger.debug("NEW TRADE EVENT RECEIVED")
 
         self.received_ticks += 1
 
@@ -677,7 +677,7 @@ class CoinDCXWebSocket:
 
         try:
 
-            self.logger.info("Raw Tick : %s", data)
+            self.logger.debug("Raw Tick : %s", data)
 
             if isinstance(data, dict) and "data" in data:
                 data = json.loads(data["data"])
@@ -735,7 +735,7 @@ class CoinDCXWebSocket:
 
     def _process_tick(self, tick):
 
-        self.logger.info("PROCESSING TICK")
+        self.logger.debug("PROCESSING TICK")
 
         price = self.extract_price(tick)
 
@@ -776,7 +776,7 @@ class CoinDCXWebSocket:
 
         if current_candle is not None:
 
-            self.logger.info(
+            self.logger.debug(
                 "Current Candle : %s",
                 current_candle,
             )
