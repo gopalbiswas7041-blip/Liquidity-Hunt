@@ -207,6 +207,18 @@ class ChartWidget(QWidget):
         print(type(self.live_candle_signal))
         print(self.live_candle_signal)
 
+        # Widget already destroyed?
+        if self.webview is None:
+            return
+
+        try:
+            page = self.webview.page()
+        except RuntimeError:
+            return
+
+        if page is None:
+            return
+
         self.live_candle_signal.emit(candle_data)
 
     @Slot(dict)

@@ -467,6 +467,25 @@ class Controller:
             self.chart_widget.update_last_candle(
                 candle
             )
+            
+            # ------------------------------------------
+            # Closed Candle Detection
+            # ------------------------------------------
+
+            try:
+
+                if hasattr(candle, "closed"):
+
+                    if candle.closed:
+
+                        print("=" * 60)
+                        print("CANDLE CLOSED")
+                        print(candle)
+                        print("=" * 60)
+
+            except Exception:
+
+                traceback.print_exc()
 
         except Exception:
 
