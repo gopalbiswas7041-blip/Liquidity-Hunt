@@ -1,49 +1,100 @@
 # ==========================================================
 # Liquidity Hunter AI
-# Confluence Engine V16 Stable
+# Confluence Engine V20.4
+#
+# Direction-Aware Smart Money Confluence Engine
+#
+# Logic:
+#
+# Liquidity Sweep
+#       ↓
+# Reversal Direction
+#       ↓
+# Confirmed CHoCH
+#       ↓
+# Structure BOS
+#       ↓
+# Order Block
+#       ↓
+# FVG
+#       ↓
+# HTF Trend
+#       ↓
+# Final Confluence
+#
+# Important:
+#
+# Bullish Sweep  != BUY
+# Bullish Sweep  -> potential SELL
+#
+# Bearish Sweep  != SELL
+# Bearish Sweep  -> potential BUY
+#
+# Confirmed CHoCH has highest directional priority.
 # ==========================================================
+
 
 class ConfluenceEngine:
 
     def __init__(self):
 
-        print("Confluence Engine V16 Initialized")
+        print(
+            "Confluence Engine V20.4 Initialized"
+        )
 
-        # ----------------------------------------
+        # --------------------------------------------------
         # Score Weights
-        # ----------------------------------------
+        # --------------------------------------------------
 
         self.score_weights = {
 
             "liquidity": 25,
+
             "structure": 25,
+
             "choch": 25,
+
             "order_block": 15,
+
             "fvg": 10,
+
             "trend": 15,
 
             "strong_trend_bonus": 10,
+
             "moderate_trend_bonus": 5,
+
             "trend_penalty": 20
 
         }
 
-        # ----------------------------------------
+        # --------------------------------------------------
         # Engine Settings
-        # ----------------------------------------
+        # --------------------------------------------------
 
         self.confirmation_zone = 5
+
         self.minimum_trade_score = 75
+
         self.maximum_confidence = 100
 
     # ======================================================
-    # Helper Functions
+    # Helper: Add Reason
     # ======================================================
 
-    def add_reason(self, result, text):
+    def add_reason(
+        self,
+        result,
+        text
+    ):
 
         if text not in result["reasons"]:
+
             result["reasons"].append(text)
+
+    # ======================================================
+    # Helper: Add Score
+    # ======================================================
 
     def add_score(
         self,
@@ -53,28 +104,305 @@ class ConfluenceEngine:
         bearish_score
     ):
 
-        if direction == "Bullish":
+        if direction == "BUY":
+
             bullish_score += score
-        else:
+
+        elif direction == "SELL":
+
             bearish_score += score
 
-        return bullish_score, bearish_score
+        return (
+            bullish_score,
+            bearish_score
+        )
 
-    def calculate_quality(self, confidence):
+    # ======================================================
+    # Quality
+    # ======================================================
+
+    def calculate_quality(
+        self,
+        confidence
+    ):
 
         if confidence >= 90:
+
             return "A+", "READY"
 
         elif confidence >= 75:
+
             return "A", "READY"
 
         elif confidence >= 60:
+
             return "B", "WAIT"
 
         elif confidence >= 40:
+
             return "C", "WAIT"
 
         return "D", "AVOID"
+
+    # ======================================================
+    # Liquidity Direction
+    #
+    # IMPORTANT:
+    #
+    # Bullish Sweep
+    #     ↓
+    # Sell-side liquidity was taken
+    #     ↓
+    # Potential bearish reversal
+    #     ↓
+    # SELL
+    #
+    # Bearish Sweep
+    #     ↓
+    # Buy-side liquidity was taken
+    #     ↓
+    # Potential bullish reversal
+    #     ↓
+    # BUY
+    # ======================================================
+
+    def get_liquidity_direction(
+        self,
+        liquidity
+    ):
+
+        if not isinstance(
+            liquidity,
+            dict
+        ):
+
+            return None
+
+        liquidity_type = str(
+            liquidity.get(
+                "type",
+                ""
+            )
+        )
+
+        if liquidity_type == "Bullish Sweep":
+
+            return "SELL"
+
+        if liquidity_type == "Bearish Sweep":
+
+            return "BUY"
+
+        return None
+
+    # ======================================================
+    # CHoCH Direction
+    # ======================================================
+
+    def get_choch_direction(
+        self,
+        choch
+    ):
+
+        if not isinstance(
+            choch,
+            list
+        ):
+
+            return None
+
+        if not choch:
+
+            return None
+
+        # ----------------------------------------------
+        # Search latest valid CHoCH
+        # ----------------------------------------------
+
+        for item in reversed(choch):
+
+            if not isinstance(
+                item,
+                dict
+            ):
+
+                continue
+
+            event_type = str(
+                item.get(
+                    "type",
+                    ""
+                )
+            )
+
+            if "Bullish CHoCH" in event_type:
+
+                return "BUY"
+
+            if "Bearish CHoCH" in event_type:
+
+                return "SELL"
+
+        return None
+
+    # ======================================================
+    # Structure Direction
+    # ======================================================
+
+    def get_structure_direction(
+        self,
+        item
+    ):
+
+        if not isinstance(
+            item,
+            dict
+        ):
+
+            return None
+
+        event_type = str(
+            item.get(
+                "type",
+                ""
+            )
+        )
+
+        if "Bullish BOS" in event_type:
+
+            return "BUY"
+
+        if "Bearish BOS" in event_type:
+
+            return "SELL"
+
+        if "Bullish CHoCH" in event_type:
+
+            return "BUY"
+
+        if "Bearish CHoCH" in event_type:
+
+            return "SELL"
+
+        return None
+
+    # ======================================================
+    # Generic Direction
+    #
+    # Used for:
+    # Order Blocks
+    # FVG
+    # ======================================================
+
+    def get_component_direction(
+        self,
+        item
+    ):
+
+        if not isinstance(
+            item,
+            dict
+        ):
+
+            return None
+
+        event_type = str(
+            item.get(
+                "type",
+                ""
+            )
+        )
+
+        if "Bullish" in event_type:
+
+            return "BUY"
+
+        if "Bearish" in event_type:
+
+            return "SELL"
+
+        return None
+
+    # ======================================================
+    # Find Nearest Component
+    #
+    # Searches backward from anchor index.
+    #
+    # This prevents old historical components from
+    # influencing the current setup.
+    # ======================================================
+
+    def find_nearest_component(
+        self,
+        components,
+        anchor_index
+    ):
+
+        if not isinstance(
+            components,
+            list
+        ):
+
+            return None
+
+        candidates = []
+
+        for item in components:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+
+                continue
+
+            index = item.get(
+                "index"
+            )
+
+            if index is None:
+
+                continue
+
+            try:
+
+                index = int(index)
+
+            except Exception:
+
+                continue
+
+            distance = abs(
+                index - anchor_index
+            )
+
+            if distance <= self.confirmation_zone:
+
+                candidates.append(
+                    (
+                        distance,
+                        index,
+                        item
+                    )
+                )
+
+        if not candidates:
+
+            return None
+
+        # ----------------------------------------------
+        # Nearest first.
+        # If same distance, latest index wins.
+        # ----------------------------------------------
+
+        candidates.sort(
+            key=lambda x: (
+                x[0],
+                -x[1]
+            )
+        )
+
+        return candidates[0][2]
 
     # ======================================================
     # Main Analysis
@@ -90,11 +418,18 @@ class ConfluenceEngine:
         trend
     ):
 
-        print("Checking Smart Money Confluence...")
+        print(
+            "Checking Smart Money Confluence..."
+        )
+
+        # ==================================================
+        # Default Result
+        # ==================================================
 
         result = {
 
             "valid": False,
+
             "direction": "NO TRADE",
 
             "confidence": 0,
@@ -108,6 +443,7 @@ class ConfluenceEngine:
             "scorecard": {
 
                 "bullish_score": 0,
+
                 "bearish_score": 0
 
             }
@@ -115,244 +451,490 @@ class ConfluenceEngine:
         }
 
         bullish_score = 0
+
         bearish_score = 0
 
-        # ----------------------------------------
-        # No Liquidity
-        # ----------------------------------------
+        # ==================================================
+        # Validate Liquidity
+        # ==================================================
 
-        if not liquidity:
+        if not isinstance(
+            liquidity,
+            list
+        ) or not liquidity:
 
             self.add_reason(
                 result,
                 "No Liquidity Sweep Found"
             )
 
+            print(
+                "\n========== CONFLUENCE REPORT =========="
+            )
+
+            print(
+                "Direction : NO TRADE"
+            )
+
+            print(
+                "Confidence: 0"
+            )
+
+            print(
+                "Quality   : D"
+            )
+
+            print(
+                "Status    : AVOID"
+            )
+
+            print(
+                "Reasons   :",
+                result["reasons"]
+            )
+
+            print(
+                "=======================================\n"
+            )
+
             return result
 
-        latest_liquidity = liquidity[-1]
+        # ==================================================
+        # Latest Liquidity
+        # ==================================================
 
-        liquidity_index = latest_liquidity["index"]
+        latest_liquidity = None
 
-        if "Bullish" in latest_liquidity["type"]:
+        valid_liquidity = []
 
-            direction = "Bullish"
+        for item in liquidity:
 
-        else:
+            if not isinstance(
+                item,
+                dict
+            ):
 
-            direction = "Bearish"
+                continue
 
-        bullish_score, bearish_score = self.add_score(
+            if "index" not in item:
 
-            direction,
+                continue
 
-            self.score_weights["liquidity"],
+            if "type" not in item:
 
-            bullish_score,
+                continue
 
-            bearish_score
+            valid_liquidity.append(
+                item
+            )
 
+        if not valid_liquidity:
+
+            self.add_reason(
+                result,
+                "No Valid Liquidity Sweep"
+            )
+
+            return result
+
+        latest_liquidity = max(
+            valid_liquidity,
+            key=lambda item: int(
+                item["index"]
+            )
+        )
+
+        liquidity_index = int(
+            latest_liquidity["index"]
+        )
+
+        liquidity_type = str(
+            latest_liquidity["type"]
+        )
+
+        # ==================================================
+        # Liquidity Direction
+        # ==================================================
+
+        liquidity_direction = (
+            self.get_liquidity_direction(
+                latest_liquidity
+            )
+        )
+
+        if liquidity_direction is None:
+
+            self.add_reason(
+                result,
+                "Unknown Liquidity Direction"
+            )
+
+            return result
+
+        # --------------------------------------------------
+        # Liquidity itself gives setup direction.
+        # It is NOT final direction until CHoCH confirms.
+        # --------------------------------------------------
+
+        setup_direction = (
+            liquidity_direction
+        )
+
+        bullish_score, bearish_score = (
+            self.add_score(
+                setup_direction,
+                self.score_weights["liquidity"],
+                bullish_score,
+                bearish_score
+            )
         )
 
         self.add_reason(
             result,
-            latest_liquidity["type"]
+            liquidity_type
         )
 
-        # =====================================================
-        # Market Structure Confirmation
-        # =====================================================
+        # ==================================================
+        # CHoCH Direction
+        #
+        # Confirmed CHoCH gets priority over liquidity.
+        # ==================================================
 
-        for item in reversed(structure):
+        choch_direction = (
+            self.get_choch_direction(
+                choch
+            )
+        )
 
-            if abs(item["index"] - liquidity_index) <= self.confirmation_zone:
+        if choch_direction is not None:
 
-                if direction in item["type"]:
+            final_direction = (
+                choch_direction
+            )
 
-                    bullish_score, bearish_score = self.add_score(
+            # ----------------------------------------------
+            # Check whether CHoCH agrees with liquidity.
+            # ----------------------------------------------
 
-                        direction,
+            if choch_direction == setup_direction:
+
+                self.add_reason(
+                    result,
+                    "CHoCH Direction Confirmed"
+                )
+
+            else:
+
+                self.add_reason(
+                    result,
+                    "Liquidity Reversal Confirmed By CHoCH"
+                )
+
+            # ----------------------------------------------
+            # CHoCH score
+            # ----------------------------------------------
+
+            bullish_score, bearish_score = (
+                self.add_score(
+                    choch_direction,
+                    self.score_weights["choch"],
+                    bullish_score,
+                    bearish_score
+                )
+            )
+
+        else:
+
+            # ------------------------------------------------
+            # No confirmed CHoCH.
+            #
+            # We keep liquidity direction as a setup bias,
+            # but do not treat it as fully confirmed.
+            # ------------------------------------------------
+
+            final_direction = (
+                setup_direction
+            )
+
+            self.add_reason(
+                result,
+                "CHoCH Not Confirmed"
+            )
+
+        # ==================================================
+        # Anchor Index
+        #
+        # If CHoCH exists, use CHoCH candle as the main
+        # confluence anchor.
+        #
+        # Otherwise use liquidity candle.
+        # ==================================================
+
+        anchor_index = liquidity_index
+
+        if isinstance(
+            choch,
+            list
+        ) and choch:
+
+            latest_choch = None
+
+            for item in reversed(choch):
+
+                if isinstance(
+                    item,
+                    dict
+                ):
+
+                    if "index" in item:
+
+                        latest_choch = item
+
+                        break
+
+            if latest_choch is not None:
+
+                try:
+
+                    anchor_index = int(
+                        latest_choch["index"]
+                    )
+
+                except Exception:
+
+                    anchor_index = liquidity_index
+
+        # ==================================================
+        # Structure Confirmation
+        # ==================================================
+
+        structure_component = (
+            self.find_nearest_component(
+                structure,
+                anchor_index
+            )
+        )
+
+        if structure_component is not None:
+
+            structure_direction = (
+                self.get_structure_direction(
+                    structure_component
+                )
+            )
+
+            if (
+                structure_direction ==
+                final_direction
+            ):
+
+                bullish_score, bearish_score = (
+                    self.add_score(
+                        final_direction,
                         self.score_weights["structure"],
                         bullish_score,
                         bearish_score
-
                     )
+                )
 
-                    self.add_reason(
-                        result,
-                        item["type"]
+                self.add_reason(
+                    result,
+                    structure_component.get(
+                        "type",
+                        "Structure Confirmed"
                     )
+                )
 
-                else:
+            elif structure_direction is not None:
 
-                    self.add_reason(
-                        result,
-                        "Structure Conflict"
-                    )
+                self.add_reason(
+                    result,
+                    "Structure Conflict"
+                )
 
-                break
+        else:
 
-        # =====================================================
-        # CHoCH Confirmation
-        # =====================================================
+            self.add_reason(
+                result,
+                "Structure Confirmation Missing"
+            )
 
-        for item in reversed(choch):
-
-            if abs(item["index"] - liquidity_index) <= self.confirmation_zone:
-
-                if direction in item["type"]:
-
-                    bullish_score, bearish_score = self.add_score(
-
-                        direction,
-                        self.score_weights["choch"],
-                        bullish_score,
-                        bearish_score
-
-                    )
-
-                    self.add_reason(
-                        result,
-                        item["type"]
-                    )
-
-                else:
-
-                    self.add_reason(
-                        result,
-                        "CHoCH Conflict"
-                    )
-
-                break
-
-        # =====================================================
+        # ==================================================
         # Order Block Confirmation
-        # =====================================================
+        # ==================================================
 
-        for item in reversed(order_blocks):
+        order_block_component = (
+            self.find_nearest_component(
+                order_blocks,
+                anchor_index
+            )
+        )
 
-            if abs(item["index"] - liquidity_index) <= self.confirmation_zone:
+        if order_block_component is not None:
 
-                if direction in item["type"]:
+            ob_direction = (
+                self.get_component_direction(
+                    order_block_component
+                )
+            )
 
-                    bullish_score, bearish_score = self.add_score(
+            if ob_direction == final_direction:
 
-                        direction,
+                bullish_score, bearish_score = (
+                    self.add_score(
+                        final_direction,
                         self.score_weights["order_block"],
                         bullish_score,
                         bearish_score
-
                     )
+                )
 
-                    self.add_reason(
-                        result,
-                        item["type"]
+                self.add_reason(
+                    result,
+                    order_block_component.get(
+                        "type",
+                        "Order Block Confirmed"
                     )
+                )
 
-                else:
+            elif ob_direction is not None:
 
-                    self.add_reason(
-                        result,
-                        "Order Block Conflict"
-                    )
+                self.add_reason(
+                    result,
+                    "Order Block Conflict"
+                )
 
-                break
+        else:
 
-        # =====================================================
+            self.add_reason(
+                result,
+                "Order Block Confirmation Missing"
+            )
+
+        # ==================================================
         # Fair Value Gap Confirmation
-        # =====================================================
+        # ==================================================
 
-        for item in reversed(fvg):
+        fvg_component = (
+            self.find_nearest_component(
+                fvg,
+                anchor_index
+            )
+        )
 
-            if abs(item["index"] - liquidity_index) <= self.confirmation_zone:
+        if fvg_component is not None:
 
-                if direction in item["type"]:
+            fvg_direction = (
+                self.get_component_direction(
+                    fvg_component
+                )
+            )
 
-                    bullish_score, bearish_score = self.add_score(
+            if fvg_direction == final_direction:
 
-                        direction,
+                bullish_score, bearish_score = (
+                    self.add_score(
+                        final_direction,
                         self.score_weights["fvg"],
                         bullish_score,
                         bearish_score
-
                     )
+                )
 
-                    self.add_reason(
-                        result,
-                        item["type"]
+                self.add_reason(
+                    result,
+                    fvg_component.get(
+                        "type",
+                        "FVG Confirmed"
                     )
+                )
 
-                else:
+            elif fvg_direction is not None:
 
-                    self.add_reason(
-                        result,
-                        "FVG Conflict"
-                    )
+                self.add_reason(
+                    result,
+                    "FVG Conflict"
+                )
 
-                break
+        else:
 
-        # =====================================================
+            self.add_reason(
+                result,
+                "FVG Confirmation Missing"
+            )
+
+        # ==================================================
         # Trend Alignment
-        # =====================================================
+        # ==================================================
 
-        if trend:
+        if isinstance(
+            trend,
+            dict
+        ):
 
-            trend_direction = trend.get(
-                "trend",
-                "NONE"
-            )
+            trend_direction = str(
+                trend.get(
+                    "trend",
+                    "NONE"
+                )
+            ).upper()
 
-            trend_strength = trend.get(
-                "strength",
-                "WEAK"
-            )
+            trend_strength = str(
+                trend.get(
+                    "strength",
+                    "WEAK"
+                )
+            ).upper()
 
             trend_match = (
 
-                direction == "Bullish"
-                and trend_direction == "BUY"
+                final_direction == "BUY"
+
+                and
+
+                trend_direction == "BUY"
 
             ) or (
 
-                direction == "Bearish"
-                and trend_direction == "SELL"
+                final_direction == "SELL"
+
+                and
+
+                trend_direction == "SELL"
 
             )
 
             if trend_match:
 
-                bullish_score, bearish_score = self.add_score(
-
-                    direction,
-
-                    self.score_weights["trend"],
-
-                    bullish_score,
-
-                    bearish_score
-
+                bullish_score, bearish_score = (
+                    self.add_score(
+                        final_direction,
+                        self.score_weights["trend"],
+                        bullish_score,
+                        bearish_score
+                    )
                 )
 
                 self.add_reason(
-
                     result,
-
                     "Trend Alignment"
-
                 )
+
+                # ------------------------------------------
+                # Strong Trend Bonus
+                # ------------------------------------------
 
                 if trend_strength == "STRONG":
 
-                    bullish_score, bearish_score = self.add_score(
-
-                        direction,
-
-                        self.score_weights["strong_trend_bonus"],
-
-                        bullish_score,
-
-                        bearish_score
-
+                    bullish_score, bearish_score = (
+                        self.add_score(
+                            final_direction,
+                            self.score_weights[
+                                "strong_trend_bonus"
+                            ],
+                            bullish_score,
+                            bearish_score
+                        )
                     )
 
                     self.add_reason(
@@ -360,18 +942,21 @@ class ConfluenceEngine:
                         "Strong Trend Bonus"
                     )
 
+                # ------------------------------------------
+                # Moderate Trend Bonus
+                # ------------------------------------------
+
                 elif trend_strength == "MODERATE":
 
-                    bullish_score, bearish_score = self.add_score(
-
-                        direction,
-
-                        self.score_weights["moderate_trend_bonus"],
-
-                        bullish_score,
-
-                        bearish_score
-
+                    bullish_score, bearish_score = (
+                        self.add_score(
+                            final_direction,
+                            self.score_weights[
+                                "moderate_trend_bonus"
+                            ],
+                            bullish_score,
+                            bearish_score
+                        )
                     )
 
                     self.add_reason(
@@ -381,33 +966,69 @@ class ConfluenceEngine:
 
             else:
 
-                if direction == "Bullish":
+                # ------------------------------------------
+                # Trend conflict
+                # ------------------------------------------
 
-                    bullish_score -= self.score_weights["trend_penalty"]
+                if final_direction == "BUY":
 
-                else:
+                    bullish_score -= (
+                        self.score_weights[
+                            "trend_penalty"
+                        ]
+                    )
 
-                    bearish_score -= self.score_weights["trend_penalty"]
+                elif final_direction == "SELL":
+
+                    bearish_score -= (
+                        self.score_weights[
+                            "trend_penalty"
+                        ]
+                    )
 
                 self.add_reason(
                     result,
                     "Trend Conflict"
                 )
 
-        # =====================================================
+        else:
+
+            self.add_reason(
+                result,
+                "Trend Data Missing"
+            )
+
+        # ==================================================
+        # Prevent Negative Scores
+        # ==================================================
+
+        bullish_score = max(
+            0,
+            bullish_score
+        )
+
+        bearish_score = max(
+            0,
+            bearish_score
+        )
+
+        # ==================================================
         # Final Scorecard
-        # =====================================================
+        # ==================================================
 
         result["scorecard"] = {
 
-            "bullish_score": bullish_score,
-            "bearish_score": bearish_score
+            "bullish_score":
+                bullish_score,
+
+            "bearish_score":
+                bearish_score
 
         }
 
-        # =====================================================
-        # Confidence Calculation
-        # =====================================================
+        # ==================================================
+        # Confidence
+        # ==================================================
 
         highest_score = max(
             bullish_score,
@@ -422,58 +1043,73 @@ class ConfluenceEngine:
             )
         )
 
-        result["confidence"] = confidence
-
-        # =====================================================
-        # Trade Quality
-        # =====================================================
-
-        quality, status = self.calculate_quality(
+        result["confidence"] = (
             confidence
         )
 
+        # ==================================================
+        # Quality
+        # ==================================================
+
+        quality, status = (
+            self.calculate_quality(
+                confidence
+            )
+        )
+
         result["quality"] = quality
+
         result["status"] = status
 
-        # =====================================================
-        # Final Trade Decision
-        # =====================================================
+        # ==================================================
+        # Final Direction
+        #
+        # Only allow the direction with the highest score.
+        # ==================================================
 
-        if (
+        if final_direction == "BUY":
 
-            bullish_score >= self.minimum_trade_score
+            if (
+                bullish_score >=
+                self.minimum_trade_score
+                and
+                bullish_score >
+                bearish_score
+            ):
 
-            and
+                result["valid"] = True
 
-            bullish_score > bearish_score
+                result["direction"] = "BUY"
 
-        ):
+            else:
 
-            result["valid"] = True
+                result["direction"] = "NO TRADE"
 
-            result["direction"] = "BUY"
+        elif final_direction == "SELL":
 
-        elif (
+            if (
+                bearish_score >=
+                self.minimum_trade_score
+                and
+                bearish_score >
+                bullish_score
+            ):
 
-            bearish_score >= self.minimum_trade_score
+                result["valid"] = True
 
-            and
+                result["direction"] = "SELL"
 
-            bearish_score > bullish_score
+            else:
 
-        ):
-
-            result["valid"] = True
-
-            result["direction"] = "SELL"
+                result["direction"] = "NO TRADE"
 
         else:
 
             result["direction"] = "NO TRADE"
 
-        # =====================================================
+        # ==================================================
         # Smart Setup Classification
-        # =====================================================
+        # ==================================================
 
         if result["valid"]:
 
@@ -505,9 +1141,9 @@ class ConfluenceEngine:
                 "Confluence Below Threshold"
             )
 
-        # =====================================================
+        # ==================================================
         # Remove Duplicate Reasons
-        # =====================================================
+        # ==================================================
 
         result["reasons"] = list(
             dict.fromkeys(
@@ -515,19 +1151,51 @@ class ConfluenceEngine:
             )
         )
 
-        # =====================================================
+        # ==================================================
         # Debug Output
-        # =====================================================
+        # ==================================================
 
-        print("\n========== CONFLUENCE REPORT ==========")
-        print("Direction :", result["direction"])
-        print("Confidence:", result["confidence"])
-        print("Quality   :", result["quality"])
-        print("Status    :", result["status"])
-        print("Bullish   :", bullish_score)
-        print("Bearish   :", bearish_score)
-        print("Reasons   :", result["reasons"])
-        print("=======================================\n")
+        print(
+            "\n========== CONFLUENCE REPORT =========="
+        )
+
+        print(
+            "Direction :",
+            result["direction"]
+        )
+
+        print(
+            "Confidence:",
+            result["confidence"]
+        )
+
+        print(
+            "Quality   :",
+            result["quality"]
+        )
+
+        print(
+            "Status    :",
+            result["status"]
+        )
+
+        print(
+            "Bullish   :",
+            bullish_score
+        )
+
+        print(
+            "Bearish   :",
+            bearish_score
+        )
+
+        print(
+            "Reasons   :",
+            result["reasons"]
+        )
+
+        print(
+            "=======================================\n"
+        )
 
         return result
-        

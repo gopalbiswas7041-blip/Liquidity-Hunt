@@ -108,26 +108,142 @@ window.setChartData = function(candles)
 // Live Candle Update
 // ==========================================
 
+let jsLastCandleTime = null;
+
 window.updateLastCandle = function(candle)
 {
+    console.log("=================================");
     console.log("JS updateLastCandle CALLED");
-    console.log(candle);
-
-    console.log("TIME =", candle.time);
-    console.log("TYPE =", typeof candle.time);
-    console.log("CANDLE =", JSON.stringify(candle));
-    console.log("LAST UPDATE");
+    console.log("Incoming candle =", candle);
 
     try
     {
-        candleSeries.update(candle);
+        const incomingTime = Number(candle.time);
 
-        console.log("UPDATE SUCCESS");
+        console.log(
+            "JS Last Candle Time =",
+            jsLastCandleTime
+        );
+
+        console.log(
+            "JS Incoming Time =",
+            incomingTime
+        );
+
+        console.log(
+            "JS Time Type =",
+            typeof candle.time
+        );
+
+        // ------------------------------------------
+        // Basic validation
+        // ------------------------------------------
+
+        if (!Number.isFinite(incomingTime))
+        {
+            console.error(
+                "❌ INVALID CANDLE TIME"
+            );
+
+            return "INVALID_TIME";
+        }
+
+        if (
+            !Number.isFinite(Number(candle.open)) ||
+            !Number.isFinite(Number(candle.high)) ||
+            !Number.isFinite(Number(candle.low)) ||
+            !Number.isFinite(Number(candle.close))
+        )
+        {
+            console.error(
+                "❌ INVALID OHLC"
+            );
+
+            return "INVALID_OHLC";
+        }
+
+        // ------------------------------------------
+        // Normalize payload
+        // ------------------------------------------
+
+        const normalizedCandle = {
+            time: incomingTime,
+            open: Number(candle.open),
+            high: Number(candle.high),
+            low: Number(candle.low),
+            close: Number(candle.close)
+        };
+
+        console.log(
+            "Normalized Candle =",
+            normalizedCandle
+        );
+
+        // ------------------------------------------
+        // OLD CANDLE
+        // ------------------------------------------
+
+        if (
+            jsLastCandleTime !== null &&
+            incomingTime < jsLastCandleTime
+        )
+        {
+            console.warn(
+                "⚠️ JS STALE CANDLE IGNORED"
+            );
+
+            console.warn(
+                "Incoming =",
+                incomingTime
+            );
+
+            console.warn(
+                "Latest =",
+                jsLastCandleTime
+            );
+
+            return "STALE";
+        }
+
+        // ------------------------------------------
+        // UPDATE CHART
+        // ------------------------------------------
+
+        candleSeries.update(
+            normalizedCandle
+        );
+
+        // ------------------------------------------
+        // Register latest timestamp
+        // ------------------------------------------
+
+        jsLastCandleTime = incomingTime;
+
+        console.log(
+            "✅ UPDATE SUCCESS"
+        );
+
+        console.log(
+            "JS Latest Candle Time =",
+            jsLastCandleTime
+        );
+
+        console.log("=================================");
+
+        return "UPDATED";
+
     }
     catch(err)
     {
-        console.error("UPDATE FAILED");
+        console.error(
+            "❌ UPDATE FAILED"
+        );
+
         console.error(err);
+
+        console.log("=================================");
+
+        return "ERROR";
     }
 };
 

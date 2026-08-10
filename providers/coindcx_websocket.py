@@ -2,13 +2,19 @@
 ============================================================
 Liquidity Hunter AI
 CoinDCX Socket.IO Engine
-Production Edition (V17.4 Clean)
+Production Edition (V20.3)
 ============================================================
 
 Author  : Liquidity Hunter AI
 Purpose : Production-grade live market data engine
 Provider: CoinDCX Socket.IO
 
+V20.3 Update
+------------
+• Closed Candle Callback
+• Clean Current Candle Callback
+• Closed Candle Event Separation
+• Controller Integration Support
 ============================================================
 """
 
@@ -16,10 +22,12 @@ from __future__ import annotations
 
 import logging
 from utils.logger import get_logger
+
 import threading
 import time
 import queue
 import json
+
 from datetime import datetime
 from typing import Callable
 from typing import Optional
@@ -43,6 +51,7 @@ class CoinDCXWebSocket:
     • Queue Processing
     • Controller Notification
     • Chart Update
+    • Closed Candle Notification
     """
 
     DEFAULT_SOCKET_URL = "https://stream.coindcx.com"
@@ -199,6 +208,12 @@ class CoinDCXWebSocket:
 
         self.on_candle: Optional[Callable] = None
 
+        # ----------------------------------------------
+        # V20.3 Closed Candle Callback
+        # ----------------------------------------------
+
+        self.on_candle_closed: Optional[Callable] = None
+
         self.on_connected: Optional[Callable] = None
 
         self.on_disconnected: Optional[Callable] = None
@@ -214,13 +229,19 @@ class CoinDCXWebSocket:
         # ----------------------------------------------
 
         self.logger.info("=" * 60)
-        self.logger.info("Liquidity Hunter AI")
+
         self.logger.info(
-            "CoinDCX Socket.IO Engine (Production)"
+            "Liquidity Hunter AI"
         )
+
+        self.logger.info(
+            "CoinDCX Socket.IO Engine (V20.3)"
+        )
+
         self.logger.info(
             "Initialization Completed"
         )
+
         self.logger.info("=" * 60)
 
     # ==================================================
@@ -234,12 +255,27 @@ class CoinDCXWebSocket:
 
         self.on_tick = callback
 
+    # ==================================================
+
     def set_candle_callback(
         self,
         callback: Callable,
     ):
 
         self.on_candle = callback
+
+    # ==================================================
+    # V20.3 Closed Candle Callback
+    # ==================================================
+
+    def set_candle_closed_callback(
+        self,
+        callback: Callable,
+    ):
+
+        self.on_candle_closed = callback
+
+    # ==================================================
 
     def set_connected_callback(
         self,
@@ -248,6 +284,8 @@ class CoinDCXWebSocket:
 
         self.on_connected = callback
 
+    # ==================================================
+
     def set_disconnected_callback(
         self,
         callback: Callable,
@@ -255,12 +293,16 @@ class CoinDCXWebSocket:
 
         self.on_disconnected = callback
 
+    # ==================================================
+
     def set_controller(
         self,
         controller,
     ):
 
         self.controller = controller
+
+    # ==================================================
 
     def set_chart_widget(
         self,
@@ -294,6 +336,8 @@ class CoinDCXWebSocket:
     def is_connected(self) -> bool:
 
         return self.connected
+
+    # ==================================================
 
     def is_running(self) -> bool:
 
@@ -357,6 +401,7 @@ class CoinDCXWebSocket:
             try:
 
                 self.tick_queue.get_nowait()
+
                 self.tick_queue.task_done()
 
             except queue.Empty:
@@ -371,6 +416,8 @@ class CoinDCXWebSocket:
 
         self.last_heartbeat = time.time()
 
+    # ==================================================
+
     def heartbeat_age(self):
 
         if self.last_heartbeat is None:
@@ -378,6 +425,8 @@ class CoinDCXWebSocket:
             return None
 
         return time.time() - self.last_heartbeat
+
+    # ==================================================
 
     def is_connection_healthy(self):
 
@@ -408,9 +457,11 @@ class CoinDCXWebSocket:
             self.logger.warning(
                 "WebSocket is already running."
             )
+
             return False
 
         self.socket_url = url
+
         self.symbol = symbol
 
         self._register_events()
@@ -448,7 +499,9 @@ class CoinDCXWebSocket:
                     self.socket_url,
                 )
 
-                self.logger.info("Calling sio.connect()...")
+                self.logger.info(
+                    "Calling sio.connect()..."
+                )
 
                 self.sio.connect(
                     self.socket_url,
@@ -457,7 +510,9 @@ class CoinDCXWebSocket:
                     wait_timeout=self.WAIT_TIMEOUT,
                 )
 
-                self.logger.info("sio.connect() returned.")
+                self.logger.info(
+                    "sio.connect() returned."
+                )
 
                 self.sio.wait()
 
@@ -471,6 +526,7 @@ class CoinDCXWebSocket:
                 )
 
             if self._stop_event.is_set():
+
                 break
 
             self.connected = False
@@ -480,7 +536,9 @@ class CoinDCXWebSocket:
                 self.reconnect_delay,
             )
 
-            time.sleep(self.reconnect_delay)
+            time.sleep(
+                self.reconnect_delay
+            )
 
             self.reconnect_delay = min(
                 self.reconnect_delay * 2,
@@ -515,7 +573,9 @@ class CoinDCXWebSocket:
             and self.socket_thread.is_alive()
         ):
 
-            self.socket_thread.join(timeout=2)
+            self.socket_thread.join(
+                timeout=2
+            )
 
         self.logger.info(
             "WebSocket stopped."
@@ -528,16 +588,25 @@ class CoinDCXWebSocket:
     def _register_events(self):
 
         if self._events_registered:
+
             return
+
+        # ----------------------------------------------
+        # Connected
+        # ----------------------------------------------
 
         @self.sio.event
         def connect():
 
             self.connected = True
 
-            self.connection_time = datetime.utcnow()
+            self.connection_time = (
+                datetime.utcnow()
+            )
 
-            self.reconnect_delay = self.RECONNECT_DELAY
+            self.reconnect_delay = (
+                self.RECONNECT_DELAY
+            )
 
             self.update_heartbeat()
 
@@ -551,6 +620,8 @@ class CoinDCXWebSocket:
                 self.on_connected
             )
 
+        # ----------------------------------------------
+        # Disconnected
         # ----------------------------------------------
 
         @self.sio.event
@@ -567,7 +638,9 @@ class CoinDCXWebSocket:
             )
 
         # ----------------------------------------------
-        
+        # Connection Error
+        # ----------------------------------------------
+
         @self.sio.event
         def connect_error(error):
 
@@ -577,10 +650,17 @@ class CoinDCXWebSocket:
                 "Connection error: %s",
                 error,
             )
+
+        # ----------------------------------------------
+        # New Trade
+        # ----------------------------------------------
+
         @self.sio.on("new-trade")
         def _on_new_trade(data):
 
-            self._handle_market_message(data)
+            self._handle_market_message(
+                data
+            )
 
         self._events_registered = True
 
@@ -595,6 +675,7 @@ class CoinDCXWebSocket:
             self.logger.warning(
                 "No market symbol configured."
             )
+
             return
 
         try:
@@ -631,6 +712,7 @@ class CoinDCXWebSocket:
     def _unsubscribe_market(self):
 
         if not self.symbol:
+
             return
 
         try:
@@ -664,25 +746,42 @@ class CoinDCXWebSocket:
     # Market Tick Event
     # ==================================================
 
-    def _handle_market_message(self, data):
+    def _handle_market_message(
+        self,
+        data,
+    ):
 
-        self.logger.debug("NEW TRADE EVENT RECEIVED")
+        self.logger.debug(
+            "NEW TRADE EVENT RECEIVED"
+        )
 
         self.received_ticks += 1
 
         self.update_heartbeat()
 
         if data is None:
+
             return
 
         try:
 
-            self.logger.debug("Raw Tick : %s", data)
+            self.logger.debug(
+                "Raw Tick : %s",
+                data,
+            )
 
-            if isinstance(data, dict) and "data" in data:
-                data = json.loads(data["data"])
+            if (
+                isinstance(data, dict)
+                and "data" in data
+            ):
 
-            self.tick_queue.put_nowait(data)
+                data = json.loads(
+                    data["data"]
+                )
+
+            self.tick_queue.put_nowait(
+                data
+            )
 
         except queue.Full:
 
@@ -717,7 +816,9 @@ class CoinDCXWebSocket:
 
             try:
 
-                self._process_tick(tick)
+                self._process_tick(
+                    tick
+                )
 
             except Exception:
 
@@ -733,26 +834,47 @@ class CoinDCXWebSocket:
     # Tick Processing
     # ==================================================
 
-    def _process_tick(self, tick):
+    def _process_tick(
+        self,
+        tick,
+    ):
 
-        self.logger.debug("PROCESSING TICK")
+        self.logger.debug(
+            "PROCESSING TICK"
+        )
 
-        price = self.extract_price(tick)
+        price = self.extract_price(
+            tick
+        )
 
-        if self.is_duplicate_tick(tick):
+        if self.is_duplicate_tick(
+            tick
+        ):
+
             return
 
         if price is None:
+
             return
 
-        volume = self.extract_volume(tick)
+        volume = self.extract_volume(
+            tick
+        )
 
-        tick_time = self.extract_timestamp(tick)
+        tick_time = self.extract_timestamp(
+            tick
+        )
 
-        closed_candle = self.candle_builder.update_tick(
-            price=price,
-            volume=volume,
-            timestamp=tick_time,
+        # ----------------------------------------------
+        # Update Candle Builder
+        # ----------------------------------------------
+
+        closed_candle = (
+            self.candle_builder.update_tick(
+                price=price,
+                volume=volume,
+                timestamp=tick_time,
+            )
         )
 
         self.processed_ticks += 1
@@ -772,7 +894,9 @@ class CoinDCXWebSocket:
         # Live Current Candle Callback
         # ----------------------------------------------
 
-        current_candle = self.candle_builder.get_current_candle()
+        current_candle = (
+            self.candle_builder.get_current_candle()
+        )
 
         if current_candle is not None:
 
@@ -787,13 +911,29 @@ class CoinDCXWebSocket:
             )
 
         # ----------------------------------------------
-        # Closed Candle Callback
+        # V20.3 Closed Candle Callback
         # ----------------------------------------------
 
         if closed_candle is not None:
 
+            self.logger.info(
+                "CANDLE CLOSED | "
+                "Time=%s | "
+                "O=%s | "
+                "H=%s | "
+                "L=%s | "
+                "C=%s | "
+                "V=%s",
+                closed_candle.timestamp,
+                closed_candle.open,
+                closed_candle.high,
+                closed_candle.low,
+                closed_candle.close,
+                closed_candle.volume,
+            )
+
             self._safe_callback(
-                self.on_candle,
+                self.on_candle_closed,
                 closed_candle,
             )
 
@@ -801,33 +941,81 @@ class CoinDCXWebSocket:
     # Tick Field Extraction
     # ==================================================
 
-    def extract_price(self, tick) -> Optional[float]:
+    def extract_price(
+        self,
+        tick,
+    ) -> Optional[float]:
 
         try:
-            return float(tick["p"])
-        except (KeyError, TypeError, ValueError):
+
+            return float(
+                tick["p"]
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+
             return None
 
-    def extract_volume(self, tick) -> float:
+    # ==================================================
+
+    def extract_volume(
+        self,
+        tick,
+    ) -> float:
 
         try:
-            return float(tick.get("q", 0.0))
-        except (TypeError, ValueError):
+
+            return float(
+                tick.get(
+                    "q",
+                    0.0
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
             return 0.0
 
-    def extract_timestamp(self, tick) -> datetime:
+    # ==================================================
+
+    def extract_timestamp(
+        self,
+        tick,
+    ) -> datetime:
 
         try:
-            timestamp_ms = int(tick["T"])
-            return datetime.fromtimestamp(timestamp_ms / 1000)
-        except (KeyError, TypeError, ValueError):
+
+            timestamp_ms = int(
+                tick["T"]
+            )
+
+            return datetime.fromtimestamp(
+                timestamp_ms / 1000
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+
             return datetime.utcnow()
 
     # ==================================================
     # Duplicate Tick Filter
     # ==================================================
 
-    def is_duplicate_tick(self, tick) -> bool:
+    def is_duplicate_tick(
+        self,
+        tick,
+    ) -> bool:
 
         key = (
             tick.get("T"),
@@ -835,10 +1023,18 @@ class CoinDCXWebSocket:
             tick.get("q"),
         )
 
-        if self._last_tick_key.get(self.symbol) == key:
+        if (
+            self._last_tick_key.get(
+                self.symbol
+            )
+            == key
+        ):
+
             return True
 
-        self._last_tick_key[self.symbol] = key
+        self._last_tick_key[
+            self.symbol
+        ] = key
 
         return False
 
@@ -874,7 +1070,9 @@ class CoinDCXWebSocket:
             and self.queue_thread.is_alive()
         ):
 
-            self.queue_thread.join(timeout=2)
+            self.queue_thread.join(
+                timeout=2
+            )
 
             self.logger.info(
                 "Tick queue worker stopped."
@@ -938,6 +1136,8 @@ class CoinDCXWebSocket:
 
         return self
 
+    # ==================================================
+
     def __exit__(
         self,
         exc_type,
@@ -975,15 +1175,23 @@ class CoinDCXWebSocket:
 
             "running": self.running,
 
-            "connection_healthy": self.is_connection_healthy(),
+            "connection_healthy": (
+                self.is_connection_healthy()
+            ),
 
             "symbol": self.symbol,
 
-            "received_ticks": self.received_ticks,
+            "received_ticks": (
+                self.received_ticks
+            ),
 
-            "processed_ticks": self.processed_ticks,
+            "processed_ticks": (
+                self.processed_ticks
+            ),
 
-            "queue_size": self.tick_queue.qsize(),
+            "queue_size": (
+                self.tick_queue.qsize()
+            ),
 
             "last_tick_time": (
                 self.last_tick_time.isoformat()
@@ -1026,17 +1234,29 @@ class CoinDCXWebSocket:
             and self.connected
         )
 
+    # ==================================================
+
     def queue_size(self):
 
         return self.tick_queue.qsize()
 
+    # ==================================================
+
     def current_candle(self):
 
-        return self.candle_builder.get_current_candle()
+        return (
+            self.candle_builder.get_current_candle()
+        )
+
+    # ==================================================
 
     def last_closed_candle(self):
 
-        return self.candle_builder.get_last_closed_candle()
+        return (
+            self.candle_builder.get_last_closed_candle()
+        )
+
+    # ==================================================
 
     def print_statistics(self):
 

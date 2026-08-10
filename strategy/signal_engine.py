@@ -40,6 +40,22 @@ class SignalEngine:
         # -------------------------
 
         liquidity = self.liquidity.detect(data_5m)
+
+        print("\n========== LIQUIDITY DEBUG ==========")
+
+        for item in liquidity[-10:]:
+            print(
+                "Type :", item.get("type"),
+                "| Index :", item.get("index"),
+                "| Price :", item.get("price"),
+                "| Time :", item.get("time")
+            )
+
+        print("Total Liquidity :", len(liquidity))
+        print("Latest Candle Index :", len(data_5m) - 1)
+
+        print("====================================\n")
+        
         structure = self.structure.detect(data_5m)
         
         # Smart CHoCH Result
