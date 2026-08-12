@@ -1,52 +1,69 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional
+
 
 # ==========================================================
 # Liquidity Hunter AI
-# Liquidity Sweep V2.2
+# Liquidity Sweep V2.3
 #
 # ACTIVE LIQUIDITY ENGINE
 #
-# Core Logic:
+# Production Logic
+# ----------------------------------------------------------
 #
 # Bearish Sweep:
-#   High > Swing High
-#   AND
-#   Close < Swing High
+#
+#     High > Swing High
+#     AND
+#     Close < Swing High
 #
 # Bullish Sweep:
-#   Low < Swing Low
-#   AND
-#   Close > Swing Low
 #
-# V2.2 Improvements:
+#     Low < Swing Low
+#     AND
+#     Close > Swing Low
 #
-#   1. No fixed candle expiry
-#   2. Latest confirmed sweep remains ACTIVE
-#   3. Newer sweep replaces previous active sweep
-#   4. Duplicate sweep cleanup
-#   5. Chronological output
-#   6. Directional latest-sweep selection
-#   7. Signal-safe output for CHoCH / Confluence
 #
-# ACTIVE LIQUIDITY RULE:
+# ACTIVE LIQUIDITY RULE
+# ----------------------------------------------------------
 #
-#   Latest confirmed liquidity sweep = ACTIVE LIQUIDITY
+# Latest confirmed sweep = ACTIVE
+#
+# Active liquidity does NOT expire by candle age.
 #
 # Example:
 #
-#   Candle 92  -> Bullish Sweep
-#   Candle 93  -> No Sweep
-#   Candle 94  -> No Sweep
-#   ...
-#   Candle 120 -> No Sweep
+#     Candle 92  -> Bullish Sweep
+#     Candle 100 -> No Sweep
+#     Candle 120 -> No Sweep
 #
-#   Candle 92 Bullish Sweep remains ACTIVE.
+#     Candle 92 remains ACTIVE.
 #
-#   If Candle 121 produces a Bearish Sweep:
+# If:
 #
-#   Candle 92 -> INACTIVE
-#   Candle 121 -> ACTIVE
+#     Candle 121 -> Bearish Sweep
+#
+# Then:
+#
+#     Candle 92  -> INACTIVE
+#     Candle 121 -> ACTIVE
+#
+#
+# V2.3 Improvements
+# ----------------------------------------------------------
+#
+# 1. No fixed 20-candle sweep search window
+# 2. No candle-age expiry
+# 3. Latest confirmed sweep selection
+# 4. Newer sweep replaces older active sweep
+# 5. Duplicate sweep cleanup
+# 6. Chronological output
+# 7. Direction-safe output
+# 8. CHoCH compatible
+# 9. Confluence compatible
+# 10. Signal-safe dictionary structure
+# 11. Active liquidity persistence
 #
 # ==========================================================
 
@@ -60,33 +77,37 @@ class LiquiditySweepV2:
     def __init__(self):
 
         print(
-            "Liquidity Sweep V2.2 Engine Initialized"
+            "Liquidity Sweep V2.3 Engine Initialized"
         )
 
         # --------------------------------------------------
-        # Swing Detection Strength
+        # Swing Detection
         # --------------------------------------------------
 
         self.left_strength = 2
+
         self.right_strength = 2
 
         # --------------------------------------------------
-        # Active liquidity
-        #
-        # This stores the latest confirmed sweep.
-        #
-        # IMPORTANT:
-        #
-        # There is NO candle-based expiry.
-        #
-        # The active sweep remains valid until a newer
-        # confirmed sweep is detected.
+        # Active Liquidity
         # --------------------------------------------------
 
-        self.active_liquidity = None
+        self.active_liquidity: Optional[
+            Dict[str, Any]
+        ] = None
+
+        # --------------------------------------------------
+        # Latest Detection Cache
+        # --------------------------------------------------
+
+        self.last_clean_signals: List[
+            Dict[str, Any]
+        ] = []
+
+        self.last_detection_index = None
 
     # ======================================================
-    # Find Swing Highs / Swing Lows
+    # FIND SWINGS
     # ======================================================
 
     def find_swings(self, data):
@@ -99,20 +120,31 @@ class LiquiditySweepV2:
 
             return [], []
 
+        required_columns = [
+            "High",
+            "Low"
+        ]
+
+        for column in required_columns:
+
+            if column not in data.columns:
+
+                return [], []
+
         highs = data["High"].values
+
         lows = data["Low"].values
 
         swing_highs = []
+
         swing_lows = []
 
         left = self.left_strength
+
         right = self.right_strength
 
         # --------------------------------------------------
-        # Confirmed swings only.
-        #
-        # The last 'right' candles cannot form a confirmed
-        # swing until enough candles exist to the right.
+        # Only confirmed swings
         # --------------------------------------------------
 
         for i in range(
@@ -121,10 +153,14 @@ class LiquiditySweepV2:
         ):
 
             # ==================================================
-            # Swing High
+            # SWING HIGH
             # ==================================================
 
             is_high = True
+
+            # --------------------------------------------------
+            # Left side
+            # --------------------------------------------------
 
             for j in range(
                 i - left,
@@ -136,6 +172,10 @@ class LiquiditySweepV2:
                     is_high = False
 
                     break
+
+            # --------------------------------------------------
+            # Right side
+            # --------------------------------------------------
 
             if is_high:
 
@@ -150,12 +190,16 @@ class LiquiditySweepV2:
 
                         break
 
+            # --------------------------------------------------
+            # Save confirmed swing high
+            # --------------------------------------------------
+
             if is_high:
 
                 swing_highs.append({
 
                     "index":
-                        i,
+                        int(i),
 
                     "price":
                         float(
@@ -165,10 +209,14 @@ class LiquiditySweepV2:
                 })
 
             # ==================================================
-            # Swing Low
+            # SWING LOW
             # ==================================================
 
             is_low = True
+
+            # --------------------------------------------------
+            # Left side
+            # --------------------------------------------------
 
             for j in range(
                 i - left,
@@ -180,6 +228,10 @@ class LiquiditySweepV2:
                     is_low = False
 
                     break
+
+            # --------------------------------------------------
+            # Right side
+            # --------------------------------------------------
 
             if is_low:
 
@@ -194,12 +246,16 @@ class LiquiditySweepV2:
 
                         break
 
+            # --------------------------------------------------
+            # Save confirmed swing low
+            # --------------------------------------------------
+
             if is_low:
 
                 swing_lows.append({
 
                     "index":
-                        i,
+                        int(i),
 
                     "price":
                         float(
@@ -214,14 +270,18 @@ class LiquiditySweepV2:
         )
 
     # ======================================================
-    # Detect Raw Liquidity Sweeps
+    # DETECT RAW SWEEPS
     #
-    # Scans the complete dataframe.
+    # IMPORTANT V2.3
     #
-    # Historical sweeps are allowed.
+    # There is NO 20-candle search limit.
     #
-    # The latest confirmed sweep will later become
-    # ACTIVE LIQUIDITY.
+    # A swing level is searched until the end of the
+    # available dataset.
+    #
+    # This is necessary because:
+    #
+    # Active liquidity has NO age expiry.
     # ======================================================
 
     def _detect_raw_sweeps(
@@ -232,65 +292,86 @@ class LiquiditySweepV2:
     ):
 
         highs = data["High"].values
+
         lows = data["Low"].values
+
         closes = data["Close"].values
 
         raw_signals = []
 
         # ==================================================
-        # Bearish Liquidity Sweep
+        # BEARISH SWEEPS
         #
-        # Price takes swing high liquidity
-        # and closes back below it.
+        # High > Swing High
+        # Close < Swing High
         # ==================================================
 
         for swing in swing_highs:
 
-            swing_index = int(
-                swing["index"]
-            )
+            try:
 
-            swing_price = float(
-                swing["price"]
-            )
+                swing_index = int(
+                    swing["index"]
+                )
 
-            start = swing_index + 1
+                swing_price = float(
+                    swing["price"]
+                )
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            start = (
+                swing_index + 1
+            )
 
             if start >= len(data):
 
                 continue
 
             # --------------------------------------------------
-            # Search until next 20 candles.
+            # Search ALL remaining candles.
             #
-            # This is NOT the active-liquidity expiry.
-            #
-            # It only defines how far we search from a swing
-            # level for the first sweep of that level.
+            # No 20 candle restriction.
             # --------------------------------------------------
-
-            end = min(
-                start + 20,
-                len(data)
-            )
 
             for i in range(
                 start,
-                end
+                len(data)
             ):
 
-                high_price = float(
-                    highs[i]
-                )
+                try:
 
-                close_price = float(
-                    closes[i]
-                )
+                    high_price = float(
+                        highs[i]
+                    )
+
+                    close_price = float(
+                        closes[i]
+                    )
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+
+                    continue
+
+                # --------------------------------------------------
+                # Bearish liquidity sweep
+                # --------------------------------------------------
 
                 if (
-                    high_price > swing_price
+                    high_price >
+                    swing_price
                     and
-                    close_price < swing_price
+                    close_price <
+                    swing_price
                 ):
 
                     raw_signals.append({
@@ -302,7 +383,7 @@ class LiquiditySweepV2:
                             swing_price,
 
                         "index":
-                            i,
+                            int(i),
 
                         "time":
                             str(
@@ -328,56 +409,82 @@ class LiquiditySweepV2:
                     })
 
                     # --------------------------------------------------
-                    # One swing level = one sweep.
+                    # One swing level = first confirmed sweep.
                     # --------------------------------------------------
 
                     break
 
         # ==================================================
-        # Bullish Liquidity Sweep
+        # BULLISH SWEEPS
         #
-        # Price takes swing low liquidity
-        # and closes back above it.
+        # Low < Swing Low
+        # Close > Swing Low
         # ==================================================
 
         for swing in swing_lows:
 
-            swing_index = int(
-                swing["index"]
-            )
+            try:
 
-            swing_price = float(
-                swing["price"]
-            )
+                swing_index = int(
+                    swing["index"]
+                )
 
-            start = swing_index + 1
+                swing_price = float(
+                    swing["price"]
+                )
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            start = (
+                swing_index + 1
+            )
 
             if start >= len(data):
 
                 continue
 
-            end = min(
-                start + 20,
-                len(data)
-            )
+            # --------------------------------------------------
+            # Search ALL remaining candles.
+            # --------------------------------------------------
 
             for i in range(
                 start,
-                end
+                len(data)
             ):
 
-                low_price = float(
-                    lows[i]
-                )
+                try:
 
-                close_price = float(
-                    closes[i]
-                )
+                    low_price = float(
+                        lows[i]
+                    )
+
+                    close_price = float(
+                        closes[i]
+                    )
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+
+                    continue
+
+                # --------------------------------------------------
+                # Bullish liquidity sweep
+                # --------------------------------------------------
 
                 if (
-                    low_price < swing_price
+                    low_price <
+                    swing_price
                     and
-                    close_price > swing_price
+                    close_price >
+                    swing_price
                 ):
 
                     raw_signals.append({
@@ -389,7 +496,7 @@ class LiquiditySweepV2:
                             swing_price,
 
                         "index":
-                            i,
+                            int(i),
 
                         "time":
                             str(
@@ -415,7 +522,7 @@ class LiquiditySweepV2:
                     })
 
                     # --------------------------------------------------
-                    # One swing level = one sweep.
+                    # One swing level = first confirmed sweep.
                     # --------------------------------------------------
 
                     break
@@ -423,16 +530,15 @@ class LiquiditySweepV2:
         return raw_signals
 
     # ======================================================
-    # Remove Duplicate Sweeps
+    # DEDUPLICATE SWEEPS
     #
-    # If one candle sweeps multiple liquidity levels in
-    # the same direction, keep one representative event.
+    # Same candle can sweep multiple levels.
     #
     # Bearish:
-    #   Keep highest swept level.
+    #     Keep highest swept level.
     #
     # Bullish:
-    #   Keep lowest swept level.
+    #     Keep lowest swept level.
     # ======================================================
 
     def _deduplicate_sweeps(
@@ -448,9 +554,27 @@ class LiquiditySweepV2:
 
         for signal in signals:
 
+            try:
+
+                signal_type = str(
+                    signal["type"]
+                )
+
+                signal_index = int(
+                    signal["index"]
+                )
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
             key = (
-                signal["type"],
-                signal["index"]
+                signal_type,
+                signal_index
             )
 
             if key not in grouped:
@@ -462,29 +586,43 @@ class LiquiditySweepV2:
             existing = grouped[key]
 
             # --------------------------------------------------
-            # Bearish sweep:
-            # higher liquidity level is more meaningful.
+            # Bearish Sweep
             # --------------------------------------------------
 
-            if signal["type"] == "Bearish Sweep":
+            if (
+                signal_type ==
+                "Bearish Sweep"
+            ):
 
                 if (
-                    signal["price"] >
-                    existing["price"]
+                    float(
+                        signal["price"]
+                    )
+                    >
+                    float(
+                        existing["price"]
+                    )
                 ):
 
                     grouped[key] = signal
 
             # --------------------------------------------------
-            # Bullish sweep:
-            # lower liquidity level is more meaningful.
+            # Bullish Sweep
             # --------------------------------------------------
 
-            elif signal["type"] == "Bullish Sweep":
+            elif (
+                signal_type ==
+                "Bullish Sweep"
+            ):
 
                 if (
-                    signal["price"] <
-                    existing["price"]
+                    float(
+                        signal["price"]
+                    )
+                    <
+                    float(
+                        existing["price"]
+                    )
                 ):
 
                     grouped[key] = signal
@@ -493,26 +631,24 @@ class LiquiditySweepV2:
             grouped.values()
         )
 
-        # --------------------------------------------------
-        # Chronological ordering
-        # --------------------------------------------------
-
         cleaned.sort(
             key=lambda item:
-                item["index"]
+                int(
+                    item.get(
+                        "index",
+                        -1
+                    )
+                )
         )
 
         return cleaned
 
     # ======================================================
-    # Select Latest Confirmed Sweep
+    # SELECT ACTIVE LIQUIDITY
     #
-    # IMPORTANT:
+    # Latest confirmed sweep becomes ACTIVE.
     #
-    # There is NO age filter.
-    #
-    # The latest confirmed sweep becomes active regardless
-    # of how many candles have passed since it occurred.
+    # There is NO age expiry.
     # ======================================================
 
     def _select_active_liquidity(
@@ -521,62 +657,122 @@ class LiquiditySweepV2:
         signals
     ):
 
+        # --------------------------------------------------
+        # No new signal found
+        #
+        # If previous active liquidity exists, keep it.
+        #
+        # This protects the "no expiry" rule.
+        # --------------------------------------------------
+
         if not signals:
+
+            if self.active_liquidity is not None:
+
+                active = dict(
+                    self.active_liquidity
+                )
+
+                try:
+
+                    latest_index = (
+                        len(data) - 1
+                    )
+
+                    sweep_index = int(
+                        active.get(
+                            "index",
+                            -1
+                        )
+                    )
+
+                    active["age"] = (
+                        latest_index -
+                        sweep_index
+                    )
+
+                    active["status"] = (
+                        "ACTIVE"
+                    )
+
+                    active["active"] = True
+
+                    self.active_liquidity = (
+                        active
+                    )
+
+                    return active
+
+                except Exception:
+
+                    return None
 
             return None
 
         # --------------------------------------------------
-        # Always use the latest chronological sweep.
+        # Latest chronological sweep
         # --------------------------------------------------
 
         latest = max(
             signals,
             key=lambda item:
-                item.get(
-                    "index",
-                    -1
+                int(
+                    item.get(
+                        "index",
+                        -1
+                    )
                 )
         )
 
-        latest_index = len(data) - 1
+        try:
 
-        sweep_index = int(
-            latest.get(
-                "index",
-                -1
+            latest_index = (
+                len(data) - 1
             )
-        )
 
-        age = (
-            latest_index -
-            sweep_index
-        )
+            sweep_index = int(
+                latest.get(
+                    "index",
+                    -1
+                )
+            )
 
-        # --------------------------------------------------
-        # Copy the signal so we do not mutate the original
-        # object unexpectedly.
-        # --------------------------------------------------
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return None
 
         active = dict(
             latest
         )
 
-        active["age"] = age
+        active["age"] = (
+            latest_index -
+            sweep_index
+        )
 
-        active["status"] = "ACTIVE"
+        active["status"] = (
+            "ACTIVE"
+        )
 
         active["active"] = True
 
         # --------------------------------------------------
-        # Save current active liquidity.
+        # Save latest sweep.
+        #
+        # This automatically replaces older liquidity.
         # --------------------------------------------------
 
-        self.active_liquidity = active
+        self.active_liquidity = (
+            active
+        )
 
         return active
 
     # ======================================================
-    # Get Active Liquidity
+    # GET ACTIVE LIQUIDITY
     # ======================================================
 
     def get_active_liquidity(
@@ -592,7 +788,21 @@ class LiquiditySweepV2:
         )
 
     # ======================================================
-    # Public Detection
+    # CLEAR ACTIVE LIQUIDITY
+    #
+    # Manual reset only.
+    #
+    # This should NOT be called because of candle age.
+    # ======================================================
+
+    def clear_active_liquidity(
+        self
+    ):
+
+        self.active_liquidity = None
+
+    # ======================================================
+    # PUBLIC DETECTION
     # ======================================================
 
     def detect(
@@ -601,12 +811,12 @@ class LiquiditySweepV2:
     ):
 
         print(
-            "Checking Liquidity Sweep V2.2..."
+            "Checking Liquidity Sweep V2.3..."
         )
 
-        # --------------------------------------------------
-        # Validate
-        # --------------------------------------------------
+        # ==================================================
+        # VALIDATION
+        # ==================================================
 
         if data is None:
 
@@ -624,12 +834,30 @@ class LiquiditySweepV2:
 
             return []
 
-        # --------------------------------------------------
-        # Swing Detection
-        # --------------------------------------------------
+        required_columns = [
+            "High",
+            "Low",
+            "Close"
+        ]
+
+        for column in required_columns:
+
+            if column not in data.columns:
+
+                print(
+                    f"Missing Column : {column}"
+                )
+
+                return []
+
+        # ==================================================
+        # SWING DETECTION
+        # ==================================================
 
         swing_highs, swing_lows = (
-            self.find_swings(data)
+            self.find_swings(
+                data
+            )
         )
 
         print(
@@ -642,9 +870,9 @@ class LiquiditySweepV2:
             f"{len(swing_lows)}"
         )
 
-        # --------------------------------------------------
-        # Raw Sweep Detection
-        # --------------------------------------------------
+        # ==================================================
+        # RAW SWEEP DETECTION
+        # ==================================================
 
         raw_signals = (
             self._detect_raw_sweeps(
@@ -659,14 +887,23 @@ class LiquiditySweepV2:
             f"{len(raw_signals)}"
         )
 
-        # --------------------------------------------------
-        # Duplicate Cleanup
-        # --------------------------------------------------
+        # ==================================================
+        # DEDUPLICATION
+        # ==================================================
 
         cleaned_signals = (
             self._deduplicate_sweeps(
                 raw_signals
             )
+        )
+
+        self.last_clean_signals = [
+            dict(signal)
+            for signal in cleaned_signals
+        ]
+
+        self.last_detection_index = (
+            len(data) - 1
         )
 
         print(
@@ -691,16 +928,16 @@ class LiquiditySweepV2:
                 print(
 
                     f"Type : "
-                    f"{signal['type']} | "
+                    f"{signal.get('type')} | "
 
                     f"Index : "
-                    f"{signal['index']} | "
+                    f"{signal.get('index')} | "
 
                     f"Price : "
-                    f"{signal['price']} | "
+                    f"{signal.get('price')} | "
 
                     f"Time : "
-                    f"{signal['time']}"
+                    f"{signal.get('time')}"
 
                 )
 
@@ -716,9 +953,6 @@ class LiquiditySweepV2:
 
         # ==================================================
         # ACTIVE LIQUIDITY
-        #
-        # Latest confirmed sweep remains active until a
-        # newer confirmed sweep appears.
         # ==================================================
 
         active_liquidity = (
@@ -728,9 +962,9 @@ class LiquiditySweepV2:
             )
         )
 
-        # --------------------------------------------------
-        # Active Liquidity Debug
-        # --------------------------------------------------
+        # ==================================================
+        # ACTIVE DEBUG
+        # ==================================================
 
         print(
             "\n========== "
@@ -738,50 +972,61 @@ class LiquiditySweepV2:
             "=========="
         )
 
-        if active_liquidity:
+        if active_liquidity is not None:
 
             print(
-
-                f"Type  : "
-                f"{active_liquidity['type']}"
-
+                "Type   :",
+                active_liquidity.get(
+                    "type"
+                )
             )
 
             print(
-
-                f"Index : "
-                f"{active_liquidity['index']}"
-
+                "Index  :",
+                active_liquidity.get(
+                    "index"
+                )
             )
 
             print(
-
-                f"Price : "
-                f"{active_liquidity['price']}"
-
+                "Price  :",
+                active_liquidity.get(
+                    "price"
+                )
             )
 
             print(
-
-                f"Time  : "
-                f"{active_liquidity['time']}"
-
+                "Time   :",
+                active_liquidity.get(
+                    "time"
+                )
             )
 
             print(
-
-                f"Age   : "
-                f"{active_liquidity['age']} candles"
-
+                "Age    :",
+                active_liquidity.get(
+                    "age"
+                ),
+                "candles"
             )
 
             print(
-                "Status: ACTIVE"
+                "Status :",
+                active_liquidity.get(
+                    "status"
+                )
             )
 
             print(
-                "Rule  : "
-                "Active until a newer sweep occurs"
+                "Active :",
+                active_liquidity.get(
+                    "active"
+                )
+            )
+
+            print(
+                "Rule   : "
+                "Active until newer sweep"
             )
 
         else:
@@ -797,25 +1042,21 @@ class LiquiditySweepV2:
         # ==================================================
         # SIGNAL-SAFE OUTPUT
         #
-        # IMPORTANT:
-        #
-        # Only the active/latest sweep is returned.
-        #
-        # Historical sweeps remain available internally
-        # through clean detection, but downstream engines
-        # receive the current active liquidity event.
+        # Downstream engines receive ONLY active liquidity.
         # ==================================================
 
-        if active_liquidity:
+        if active_liquidity is not None:
 
             return [
-                active_liquidity
+                dict(
+                    active_liquidity
+                )
             ]
 
         return []
 
     # ======================================================
-    # Get Latest Sweep
+    # GET LATEST SWEEP
     # ======================================================
 
     @staticmethod
@@ -827,19 +1068,43 @@ class LiquiditySweepV2:
 
             return None
 
+        valid = [
+
+            signal
+
+            for signal in signals
+
+            if isinstance(
+                signal,
+                dict
+            )
+
+            and
+            signal.get(
+                "index"
+            ) is not None
+
+        ]
+
+        if not valid:
+
+            return None
+
         return max(
-            signals,
+            valid,
             key=lambda item:
-                item.get(
-                    "index",
-                    -1
+                int(
+                    item.get(
+                        "index",
+                        -1
+                    )
                 )
         )
 
     # ======================================================
-    # Get Active Sweep
+    # GET ACTIVE SWEEP
     #
-    # Compatibility helper for CHoCH / Confluence.
+    # Compatibility helper.
     # ======================================================
 
     @staticmethod
@@ -847,21 +1112,31 @@ class LiquiditySweepV2:
         signals
     ):
 
-        if not signals:
-
-            return None
-
-        return max(
-            signals,
-            key=lambda item:
-                item.get(
-                    "index",
-                    -1
-                )
+        return (
+            LiquiditySweepV2
+            .get_latest_sweep(
+                signals
+            )
         )
 
     # ======================================================
-    # Engine Information
+    # GET ALL CLEAN SIGNALS
+    #
+    # Debug / analysis helper.
+    # ======================================================
+
+    def get_all_clean_signals(
+        self
+    ):
+
+        return [
+            dict(signal)
+            for signal in
+            self.last_clean_signals
+        ]
+
+    # ======================================================
+    # ENGINE INFORMATION
     # ======================================================
 
     def version(self):
@@ -872,16 +1147,22 @@ class LiquiditySweepV2:
                 "Liquidity Sweep V2",
 
             "version":
-                "V2.2",
+                "V2.3",
 
             "status":
                 "Production",
 
-            "confirmation_zone":
+            "active_liquidity_rule":
+                (
+                    "Latest confirmed sweep remains "
+                    "active until a newer sweep occurs"
+                ),
+
+            "sweep_search_expiry":
                 None,
 
-            "active_liquidity_rule":
-                "Latest confirmed sweep remains active until a newer sweep occurs",
+            "candle_age_expiry":
+                None,
 
             "developer":
                 "Liquidity Hunter AI"
@@ -889,7 +1170,7 @@ class LiquiditySweepV2:
         }
 
     # ======================================================
-    # Self Test
+    # SELF TEST
     # ======================================================
 
     def self_test(self):
@@ -918,13 +1199,24 @@ class LiquiditySweepV2:
         )
 
         print(
-            "Confirmation Zone :",
-            info["confirmation_zone"]
+            "Active Liquidity Rule :",
+            info[
+                "active_liquidity_rule"
+            ]
         )
 
         print(
-            "Active Liquidity Rule :",
-            info["active_liquidity_rule"]
+            "Sweep Search Expiry :",
+            info[
+                "sweep_search_expiry"
+            ]
+        )
+
+        print(
+            "Candle Age Expiry :",
+            info[
+                "candle_age_expiry"
+            ]
         )
 
         print(

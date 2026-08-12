@@ -55,38 +55,59 @@ class TrendState:
 
 
 # ==========================================================
-# Market Structure Engine V20.3
+# Market Structure Engine V20.4
 #
-# V20.3 UPDATE
+# ==========================================================
 #
-# Major change:
+# V20.4 MAJOR TREND UPDATE
 #
-# Trend is NO LONGER calculated from the complete historical
-# HH / HL / LH / LL count.
+# V20.3 used:
 #
-# Trend now uses the MOST RECENT CONFIRMED STRUCTURES.
+#     Recent HH / HL / LH / LL
+#             +
+#     Weighted structure recency
 #
-# Default:
+# Problem:
 #
-#     Recent structure lookback = 12
-#
-# These are structure points, NOT candles.
+# A market could have a strong current bearish move while
+# old HH / HL structures inside the recent structure window
+# still dominate the score.
 #
 # Example:
 #
-#     HH
-#     HL
-#     HH
-#     HL
-#     LH
-#     LL
-#     ...
+#     Old bullish structures
+#             +
+#     Recent SELL BOS
+#     Recent SELL BOS
+#     Recent SELL BOS
 #
-# Only the latest 12 labelled structure points are used for
-# the current trend decision.
+# V20.3 could incorrectly produce:
 #
-# This prevents old historical structure from dominating
-# the current 15m HTF trend.
+#     SIDEWAYS
+#
+# V20.4 fixes this by using:
+#
+#     1. Recent confirmed structures
+#     2. Recent BODY-CLOSE BOS
+#     3. BOS recency weighting
+#     4. Current BOS direction
+#     5. Latest structure direction
+#
+# Priority:
+#
+#     CURRENT CONFIRMED BOS
+#             >
+#     RECENT STRUCTURE
+#             >
+#     OLD STRUCTURE
+#
+#
+# IMPORTANT:
+#
+# Red candles alone do NOT create trend.
+#
+# Trend requires confirmed structure/BOS evidence.
+#
 # ==========================================================
 
 
@@ -99,7 +120,7 @@ class MarketStructure:
     def __init__(self):
 
         print(
-            "Market Structure Engine V20.3 Initialized"
+            "Market Structure Engine V20.4 Initialized"
         )
 
         # --------------------------------------------------
@@ -110,17 +131,38 @@ class MarketStructure:
         self.right_strength = 2
 
         # --------------------------------------------------
-        # Trend Settings
+        # Structure Trend Settings
         #
-        # IMPORTANT:
+        # Number of recent labelled structure points.
         #
-        # This is the number of RECENT CONFIRMED STRUCTURE
-        # POINTS used for trend detection.
-        #
-        # It is NOT the number of candles.
+        # These are STRUCTURES, not candles.
         # --------------------------------------------------
 
         self.trend_structure_lookback = 12
+
+        # --------------------------------------------------
+        # BOS Trend Settings
+        #
+        # Number of latest confirmed BOS events used for
+        # current directional trend.
+        # --------------------------------------------------
+
+        self.trend_bos_lookback = 8
+
+        # --------------------------------------------------
+        # Minimum number of same-direction recent BOS events
+        # required to activate the current BOS leg.
+        #
+        # Example:
+        #
+        #     SELL
+        #     SELL
+        #     SELL
+        #
+        # = bearish current leg
+        # --------------------------------------------------
+
+        self.minimum_bos_confirmation = 2
 
         # --------------------------------------------------
         # Minimum price distance between consecutive
@@ -149,6 +191,20 @@ class MarketStructure:
         # Latest confirmed structure
         self.latest_structure: str = ""
 
+        # --------------------------------------------------
+        # Runtime Trend Diagnostics
+        # --------------------------------------------------
+
+        self.recent_bos_direction = "NONE"
+
+        self.recent_bos_count = 0
+
+        self.bullish_bos_score = 0
+
+        self.bearish_bos_score = 0
+
+        self.bos_dominance = 0.0
+
     # ======================================================
     # Reset Runtime
     # ======================================================
@@ -166,6 +222,16 @@ class MarketStructure:
         self.latest_structure = ""
 
         self.trend_state = TrendState()
+
+        self.recent_bos_direction = "NONE"
+
+        self.recent_bos_count = 0
+
+        self.bullish_bos_score = 0
+
+        self.bearish_bos_score = 0
+
+        self.bos_dominance = 0.0
 
     # ======================================================
     # Validate Data
@@ -564,12 +630,9 @@ class MarketStructure:
     # ======================================================
     # Update Trend Counters
     #
-    # IMPORTANT:
+    # These counters remain COMPLETE DATASET counters.
     #
-    # These counters still represent the COMPLETE detected
-    # dataset for compatibility/debugging.
-    #
-    # Trend itself does NOT use these complete counts anymore.
+    # They are NOT used directly as the primary trend.
     # ======================================================
 
     def update_trend_state(self):
@@ -717,9 +780,6 @@ class MarketStructure:
 
     # ======================================================
     # Get Recent Structures
-    #
-    # Returns only the latest confirmed labelled structure
-    # points used by the Trend Engine.
     # ======================================================
 
     def get_recent_structures(self):
@@ -796,359 +856,24 @@ class MarketStructure:
         ]
 
     # ======================================================
-    # Detect Trend V20.3
-    #
-    # NEW TREND LOGIC
-    #
-    # Only recent confirmed structures are considered.
-    #
-    # Bullish evidence:
-    #
-    #     HH
-    #     HL
-    #
-    # Bearish evidence:
-    #
-    #     LH
-    #     LL
-    #
-    # Recent structures receive more importance.
-    # ======================================================
-
-    def detect_trend(self):
-
-        recent_structures = (
-            self.get_recent_structures()
-        )
-
-        # --------------------------------------------------
-        # No recent structure
-        # --------------------------------------------------
-
-        if not recent_structures:
-
-            self.trend_state.trend = "NONE"
-
-            self.trend_state.strength = "WEAK"
-
-            print(
-                "\n========== TREND =========="
-            )
-
-            print(
-                "Trend    : NONE"
-            )
-
-            print(
-                "Strength : WEAK"
-            )
-
-            print(
-                "Recent Structures : 0"
-            )
-
-            print(
-                "===========================\n"
-            )
-
-            return
-
-        # --------------------------------------------------
-        # Recent structure counts
-        # --------------------------------------------------
-
-        recent_hh = sum(
-
-            1
-
-            for item in recent_structures
-
-            if item["label"] == "HH"
-
-        )
-
-        recent_hl = sum(
-
-            1
-
-            for item in recent_structures
-
-            if item["label"] == "HL"
-
-        )
-
-        recent_lh = sum(
-
-            1
-
-            for item in recent_structures
-
-            if item["label"] == "LH"
-
-        )
-
-        recent_ll = sum(
-
-            1
-
-            for item in recent_structures
-
-            if item["label"] == "LL"
-
-        )
-
-        # --------------------------------------------------
-        # Weighted score
-        #
-        # Older recent structures get lower weight.
-        #
-        # Latest structure gets highest weight.
-        #
-        # Example with 12 structures:
-        #
-        # Oldest -> weight 1
-        # ...
-        # Latest -> weight 12
-        # --------------------------------------------------
-
-        bullish_score = 0
-
-        bearish_score = 0
-
-        total_weight = len(
-            recent_structures
-        )
-
-        for position, structure in enumerate(
-            recent_structures,
-            start=1
-        ):
-
-            label = structure["label"]
-
-            weight = position
-
-            if label in (
-                "HH",
-                "HL"
-            ):
-
-                bullish_score += weight
-
-            elif label in (
-                "LH",
-                "LL"
-            ):
-
-                bearish_score += weight
-
-        # --------------------------------------------------
-        # Difference
-        # --------------------------------------------------
-
-        score_difference = abs(
-
-            bullish_score -
-            bearish_score
-
-        )
-
-        # --------------------------------------------------
-        # Dominance ratio
-        #
-        # This tells us how strongly one side dominates.
-        # --------------------------------------------------
-
-        total_score = (
-
-            bullish_score +
-            bearish_score
-
-        )
-
-        if total_score > 0:
-
-            dominance = (
-                score_difference /
-                total_score
-            )
-
-        else:
-
-            dominance = 0.0
-
-        # --------------------------------------------------
-        # Latest structure
-        # --------------------------------------------------
-
-        latest_label = (
-            recent_structures[-1]["label"]
-        )
-
-        # --------------------------------------------------
-        # Trend Decision
-        #
-        # We require both:
-        #
-        # 1. Directional score dominance
-        # 2. Latest structure should not strongly oppose
-        #    the direction.
-        # --------------------------------------------------
-
-        if (
-
-            bullish_score >
-            bearish_score
-
-            and
-
-            latest_label in (
-                "HH",
-                "HL"
-            )
-
-        ):
-
-            self.trend_state.trend = (
-                "BULLISH"
-            )
-
-        elif (
-
-            bearish_score >
-            bullish_score
-
-            and
-
-            latest_label in (
-                "LH",
-                "LL"
-            )
-
-        ):
-
-            self.trend_state.trend = (
-                "BEARISH"
-            )
-
-        else:
-
-            self.trend_state.trend = (
-                "SIDEWAYS"
-            )
-
-        # --------------------------------------------------
-        # Strength
-        #
-        # Strong:
-        #     dominance >= 0.35
-        #
-        # Medium:
-        #     dominance >= 0.20
-        #
-        # Weak:
-        #     below 0.20
-        # --------------------------------------------------
-
-        if dominance >= 0.35:
-
-            self.trend_state.strength = (
-                "STRONG"
-            )
-
-        elif dominance >= 0.20:
-
-            self.trend_state.strength = (
-                "MEDIUM"
-            )
-
-        else:
-
-            self.trend_state.strength = (
-                "WEAK"
-            )
-
-        # --------------------------------------------------
-        # Debug
-        # --------------------------------------------------
-
-        print(
-            "\n========== "
-            "TREND V20.3 "
-            "=========="
-        )
-
-        print(
-            f"Recent Structures Used : "
-            f"{len(recent_structures)}"
-        )
-
-        print(
-            f"Recent HH : "
-            f"{recent_hh}"
-        )
-
-        print(
-            f"Recent HL : "
-            f"{recent_hl}"
-        )
-
-        print(
-            f"Recent LH : "
-            f"{recent_lh}"
-        )
-
-        print(
-            f"Recent LL : "
-            f"{recent_ll}"
-        )
-
-        print(
-            f"Bullish Score : "
-            f"{bullish_score}"
-        )
-
-        print(
-            f"Bearish Score : "
-            f"{bearish_score}"
-        )
-
-        print(
-            f"Dominance : "
-            f"{dominance:.2f}"
-        )
-
-        print(
-            f"Latest Structure : "
-            f"{latest_label}"
-        )
-
-        print(
-            f"Trend    : "
-            f"{self.trend_state.trend}"
-        )
-
-        print(
-            f"Strength : "
-            f"{self.trend_state.strength}"
-        )
-
-        print(
-            "================================\n"
-        )
-
-    # ======================================================
     # Detect Body-Close BOS
     #
     # V20.2 CORE LOGIC
     #
     # Bullish:
-    # Close > confirmed swing high
+    #
+    #     Close > confirmed swing high
     #
     # Bearish:
-    # Close < confirmed swing low
+    #
+    #     Close < confirmed swing low
     #
     # Wick-only break is NOT BOS.
+    #
+    # IMPORTANT:
+    #
+    # This function is intentionally kept compatible with
+    # the previous V20.3 BOS output.
     # ======================================================
 
     def detect_bos(self, data):
@@ -1344,6 +1069,761 @@ class MarketStructure:
         )
 
     # ======================================================
+    # Get Recent BOS Events
+    #
+    # Only latest confirmed BOS events are used by V20.4
+    # trend logic.
+    # ======================================================
+
+    def get_recent_bos_events(self):
+
+        bos_events = [
+
+            event
+
+            for event in self.structure_events
+
+            if event.event == "BOS"
+
+        ]
+
+        bos_events.sort(
+            key=lambda event:
+                event.index
+        )
+
+        return bos_events[
+            -self.trend_bos_lookback:
+        ]
+
+    # ======================================================
+    # Analyze Recent BOS
+    #
+    # V20.4 CURRENT LEG ENGINE
+    #
+    # Recent BOS receives higher importance than old
+    # structure labels.
+    # ======================================================
+
+    def _analyze_recent_bos(self):
+
+        recent_bos = (
+            self.get_recent_bos_events()
+        )
+
+        # --------------------------------------------------
+        # Reset diagnostics
+        # --------------------------------------------------
+
+        self.recent_bos_direction = "NONE"
+
+        self.recent_bos_count = len(
+            recent_bos
+        )
+
+        self.bullish_bos_score = 0
+
+        self.bearish_bos_score = 0
+
+        self.bos_dominance = 0.0
+
+        # --------------------------------------------------
+        # No BOS
+        # --------------------------------------------------
+
+        if not recent_bos:
+
+            return {
+
+                "direction": "NONE",
+
+                "count": 0,
+
+                "bullish_score": 0,
+
+                "bearish_score": 0,
+
+                "dominance": 0.0,
+
+                "latest_direction": "NONE",
+
+                "latest_index": -1,
+
+                "same_direction_count": 0
+
+            }
+
+        # --------------------------------------------------
+        # Weighted BOS
+        #
+        # Oldest recent BOS -> weight 1
+        # Latest BOS       -> highest weight
+        # --------------------------------------------------
+
+        for position, event in enumerate(
+            recent_bos,
+            start=1
+        ):
+
+            weight = position
+
+            if event.direction == "BUY":
+
+                self.bullish_bos_score += weight
+
+            elif event.direction == "SELL":
+
+                self.bearish_bos_score += weight
+
+        # --------------------------------------------------
+        # Latest BOS
+        # --------------------------------------------------
+
+        latest_event = recent_bos[-1]
+
+        latest_direction = (
+            latest_event.direction
+        )
+
+        # --------------------------------------------------
+        # Consecutive same-direction BOS
+        #
+        # Starting from the latest BOS and moving backward.
+        # --------------------------------------------------
+
+        same_direction_count = 0
+
+        for event in reversed(
+            recent_bos
+        ):
+
+            if event.direction == latest_direction:
+
+                same_direction_count += 1
+
+            else:
+
+                break
+
+        # --------------------------------------------------
+        # Weighted dominance
+        # --------------------------------------------------
+
+        total_score = (
+
+            self.bullish_bos_score +
+            self.bearish_bos_score
+
+        )
+
+        if total_score > 0:
+
+            score_difference = abs(
+
+                self.bullish_bos_score -
+                self.bearish_bos_score
+
+            )
+
+            self.bos_dominance = (
+
+                score_difference /
+                total_score
+
+            )
+
+        else:
+
+            self.bos_dominance = 0.0
+
+        # --------------------------------------------------
+        # Current BOS direction
+        #
+        # Strong current leg:
+        #
+        #     At least 2 consecutive BOS
+        #
+        # Otherwise weighted recent BOS direction.
+        # --------------------------------------------------
+
+        if same_direction_count >= (
+            self.minimum_bos_confirmation
+        ):
+
+            self.recent_bos_direction = (
+                latest_direction
+            )
+
+        elif (
+            self.bullish_bos_score >
+            self.bearish_bos_score
+        ):
+
+            self.recent_bos_direction = "BUY"
+
+        elif (
+            self.bearish_bos_score >
+            self.bullish_bos_score
+        ):
+
+            self.recent_bos_direction = "SELL"
+
+        else:
+
+            self.recent_bos_direction = "NONE"
+
+        return {
+
+            "direction":
+                self.recent_bos_direction,
+
+            "count":
+                len(recent_bos),
+
+            "bullish_score":
+                self.bullish_bos_score,
+
+            "bearish_score":
+                self.bearish_bos_score,
+
+            "dominance":
+                self.bos_dominance,
+
+            "latest_direction":
+                latest_direction,
+
+            "latest_index":
+                latest_event.index,
+
+            "latest_level":
+                latest_event.level,
+
+            "latest_close":
+                latest_event.close,
+
+            "same_direction_count":
+                same_direction_count
+
+        }
+
+    # ======================================================
+    # Detect Trend V20.4
+    #
+    # PRIMARY TREND LOGIC
+    #
+    # Priority:
+    #
+    #     1. Current confirmed BOS leg
+    #     2. Recent structure
+    #     3. Weighted structure score
+    #
+    # This prevents old bullish structures from masking a
+    # fresh bearish market leg.
+    # ======================================================
+
+    def detect_trend(self):
+
+        recent_structures = (
+            self.get_recent_structures()
+        )
+
+        # --------------------------------------------------
+        # Structure score
+        # --------------------------------------------------
+
+        bullish_structure_score = 0
+
+        bearish_structure_score = 0
+
+        recent_hh = 0
+        recent_hl = 0
+        recent_lh = 0
+        recent_ll = 0
+
+        for position, structure in enumerate(
+            recent_structures,
+            start=1
+        ):
+
+            label = structure["label"]
+
+            weight = position
+
+            if label == "HH":
+
+                recent_hh += 1
+
+                bullish_structure_score += weight
+
+            elif label == "HL":
+
+                recent_hl += 1
+
+                bullish_structure_score += weight
+
+            elif label == "LH":
+
+                recent_lh += 1
+
+                bearish_structure_score += weight
+
+            elif label == "LL":
+
+                recent_ll += 1
+
+                bearish_structure_score += weight
+
+        # --------------------------------------------------
+        # Structure dominance
+        # --------------------------------------------------
+
+        structure_total = (
+
+            bullish_structure_score +
+            bearish_structure_score
+
+        )
+
+        if structure_total > 0:
+
+            structure_difference = abs(
+
+                bullish_structure_score -
+                bearish_structure_score
+
+            )
+
+            structure_dominance = (
+
+                structure_difference /
+                structure_total
+
+            )
+
+        else:
+
+            structure_dominance = 0.0
+
+        # --------------------------------------------------
+        # Latest structure
+        # --------------------------------------------------
+
+        if recent_structures:
+
+            latest_label = (
+                recent_structures[-1]["label"]
+            )
+
+        else:
+
+            latest_label = ""
+
+        # --------------------------------------------------
+        # Recent BOS analysis
+        # --------------------------------------------------
+
+        bos_info = (
+            self._analyze_recent_bos()
+        )
+
+        bos_direction = (
+            bos_info["direction"]
+        )
+
+        bos_same_direction_count = (
+            bos_info["same_direction_count"]
+        )
+
+        bos_dominance = (
+            bos_info["dominance"]
+        )
+
+        # --------------------------------------------------
+        # DEBUG: Recent Structure Sequence
+        # --------------------------------------------------
+
+        print(
+            "Recent Structure Sequence :",
+            [
+                item["label"]
+                for item in recent_structures
+            ]
+        )
+
+        # --------------------------------------------------
+        # TREND DECISION
+        #
+        # Rule 1:
+        #
+        # Multiple recent same-direction BOS events have
+        # priority over historical structure imbalance.
+        #
+        # Example:
+        #
+        #     SELL BOS
+        #     SELL BOS
+        #     SELL BOS
+        #
+        # => BEARISH
+        #
+        # Rule 2:
+        #
+        # A strong BOS direction plus matching structure
+        # gives STRONG trend.
+        #
+        # Rule 3:
+        #
+        # If BOS is mixed and structure is also mixed,
+        # remain SIDEWAYS.
+        # --------------------------------------------------
+
+        trend = "SIDEWAYS"
+
+        strength = "WEAK"
+
+        # ==================================================
+        # STRONG CURRENT BEARISH LEG
+        # ==================================================
+
+        if (
+
+            bos_direction == "SELL"
+
+            and
+
+            bos_same_direction_count >=
+            self.minimum_bos_confirmation
+
+        ):
+
+            trend = "BEARISH"
+
+            # ----------------------------------------------
+            # Strong if:
+            #
+            # 3+ consecutive bearish BOS
+            #
+            # OR
+            #
+            # BOS dominance >= 0.35
+            # AND latest structure bearish
+            # ----------------------------------------------
+
+            if (
+
+                bos_same_direction_count >= 3
+
+                or
+
+                (
+                    bos_dominance >= 0.35
+                    and
+                    latest_label in (
+                        "LH",
+                        "LL"
+                    )
+                )
+
+            ):
+
+                strength = "STRONG"
+
+            else:
+
+                strength = "MEDIUM"
+
+        # ==================================================
+        # STRONG CURRENT BULLISH LEG
+        # ==================================================
+
+        elif (
+
+            bos_direction == "BUY"
+
+            and
+
+            bos_same_direction_count >=
+            self.minimum_bos_confirmation
+
+        ):
+
+            trend = "BULLISH"
+
+            if (
+
+                bos_same_direction_count >= 3
+
+                or
+
+                (
+                    bos_dominance >= 0.35
+                    and
+                    latest_label in (
+                        "HH",
+                        "HL"
+                    )
+                )
+
+            ):
+
+                strength = "STRONG"
+
+            else:
+
+                strength = "MEDIUM"
+
+        # ==================================================
+        # NO STRONG CURRENT BOS LEG
+        # ==================================================
+
+        else:
+
+            # ------------------------------------------------
+            # Use structure trend
+            # ------------------------------------------------
+
+            if (
+
+                bullish_structure_score >
+                bearish_structure_score
+
+                and
+
+                latest_label in (
+                    "HH",
+                    "HL"
+                )
+
+            ):
+
+                trend = "BULLISH"
+
+                if structure_dominance >= 0.35:
+
+                    strength = "STRONG"
+
+                elif structure_dominance >= 0.20:
+
+                    strength = "MEDIUM"
+
+                else:
+
+                    strength = "WEAK"
+
+            elif (
+
+                bearish_structure_score >
+                bullish_structure_score
+
+                and
+
+                latest_label in (
+                    "LH",
+                    "LL"
+                )
+
+            ):
+
+                trend = "BEARISH"
+
+                if structure_dominance >= 0.35:
+
+                    strength = "STRONG"
+
+                elif structure_dominance >= 0.20:
+
+                    strength = "MEDIUM"
+
+                else:
+
+                    strength = "WEAK"
+
+            else:
+
+                trend = "SIDEWAYS"
+
+                strength = "WEAK"
+
+        # ==================================================
+        # BOS / STRUCTURE CONFLICT PROTECTION
+        #
+        # If the latest BOS is strongly against the current
+        # structure trend, do NOT blindly call strong trend
+        # unless multiple BOS confirm it.
+        #
+        # Multiple consecutive BOS already have priority.
+        # ==================================================
+
+        if trend == "BEARISH":
+
+            if (
+
+                bos_direction == "BUY"
+
+                and
+
+                bos_same_direction_count <
+                self.minimum_bos_confirmation
+
+            ):
+
+                if (
+
+                    latest_label in (
+                        "HH",
+                        "HL"
+                    )
+
+                ):
+
+                    trend = "SIDEWAYS"
+
+                    strength = "WEAK"
+
+        elif trend == "BULLISH":
+
+            if (
+
+                bos_direction == "SELL"
+
+                and
+
+                bos_same_direction_count <
+                self.minimum_bos_confirmation
+
+            ):
+
+                if (
+
+                    latest_label in (
+                        "LH",
+                        "LL"
+                    )
+
+                ):
+
+                    trend = "SIDEWAYS"
+
+                    strength = "WEAK"
+
+        # ==================================================
+        # Store Trend
+        # ==================================================
+
+        self.trend_state.trend = trend
+
+        self.trend_state.strength = strength
+
+        # ==================================================
+        # Debug
+        # ==================================================
+
+        print(
+            "\n========== "
+            "TREND V20.4 "
+            "=========="
+        )
+
+        print(
+            f"Recent Structures Used : "
+            f"{len(recent_structures)}"
+        )
+
+        print(
+            f"Recent HH : "
+            f"{recent_hh}"
+        )
+
+        print(
+            f"Recent HL : "
+            f"{recent_hl}"
+        )
+
+        print(
+            f"Recent LH : "
+            f"{recent_lh}"
+        )
+
+        print(
+            f"Recent LL : "
+            f"{recent_ll}"
+        )
+
+        print(
+            f"Structure Bullish Score : "
+            f"{bullish_structure_score}"
+        )
+
+        print(
+            f"Structure Bearish Score : "
+            f"{bearish_structure_score}"
+        )
+
+        print(
+            f"Structure Dominance : "
+            f"{structure_dominance:.2f}"
+        )
+
+        print(
+            f"Recent BOS Used : "
+            f"{bos_info['count']}"
+        )
+
+        print(
+            f"BOS Bullish Score : "
+            f"{bos_info['bullish_score']}"
+        )
+
+        print(
+            f"BOS Bearish Score : "
+            f"{bos_info['bearish_score']}"
+        )
+
+        print(
+            f"BOS Dominance : "
+            f"{bos_info['dominance']:.2f}"
+        )
+
+        print(
+            f"Latest BOS Direction : "
+            f"{bos_info['latest_direction']}"
+        )
+
+        print(
+            f"Latest BOS Index : "
+            f"{bos_info['latest_index']}"
+        )
+
+        print(
+            f"Consecutive Same BOS : "
+            f"{bos_info['same_direction_count']}"
+        )
+
+        print(
+            f"Current BOS Direction : "
+            f"{bos_direction}"
+        )
+
+        print(
+            f"Latest Structure : "
+            f"{latest_label}"
+        )
+
+        print(
+            f"Trend    : "
+            f"{trend}"
+        )
+
+        print(
+            f"Strength : "
+            f"{strength}"
+        )
+
+        print(
+            "================================\n"
+        )
+
+    # ======================================================
     # Export Structure Events
     # ======================================================
 
@@ -1429,16 +1909,21 @@ class MarketStructure:
         self.update_trend_state()
 
         # --------------------------------------------------
-        # Trend V20.3
-        # --------------------------------------------------
-
-        self.detect_trend()
-
-        # --------------------------------------------------
-        # V20.2 Body-Close BOS
+        # Body-Close BOS
+        #
+        # IMPORTANT:
+        #
+        # BOS must be detected BEFORE trend because V20.4
+        # trend uses recent BOS information.
         # --------------------------------------------------
 
         self.detect_bos(data)
+
+        # --------------------------------------------------
+        # Trend V20.4
+        # --------------------------------------------------
+
+        self.detect_trend()
 
         # --------------------------------------------------
         # Compatibility Output
@@ -1482,14 +1967,37 @@ class MarketStructure:
                 self.trend_state.latest_low_label,
 
             # --------------------------------------------------
-            # V20.3 information
+            # V20.3 compatibility
             # --------------------------------------------------
 
             "trend_structure_lookback":
                 self.trend_structure_lookback,
 
             "recent_structures":
-                self.get_recent_structures()
+                self.get_recent_structures(),
+
+            # --------------------------------------------------
+            # V20.4 Trend Diagnostics
+            # --------------------------------------------------
+
+            "trend_bos_lookback":
+                self.trend_bos_lookback,
+
+            "recent_bos_direction":
+                self.recent_bos_direction,
+
+            "recent_bos_count":
+                self.recent_bos_count,
+
+            "bullish_bos_score":
+                self.bullish_bos_score,
+
+            "bearish_bos_score":
+                self.bearish_bos_score,
+
+            "bos_dominance":
+                self.bos_dominance
+
         }
 
     # ======================================================
@@ -1549,6 +2057,14 @@ class MarketStructure:
         ]
 
     # ======================================================
+    # Get Recent BOS
+    # ======================================================
+
+    def get_recent_bos(self):
+
+        return self.get_recent_bos_events()
+
+    # ======================================================
     # Debug Summary
     # ======================================================
 
@@ -1556,6 +2072,10 @@ class MarketStructure:
 
         recent_structures = (
             self.get_recent_structures()
+        )
+
+        recent_bos = (
+            self.get_recent_bos_events()
         )
 
         print(
@@ -1620,8 +2140,43 @@ class MarketStructure:
         )
 
         print(
-            f"Trend Lookback: "
+            f"Trend Structure Lookback: "
             f"{self.trend_structure_lookback}"
+        )
+
+        print(
+            f"Recent BOS Used: "
+            f"{len(recent_bos)}"
+        )
+
+        print(
+            f"Trend BOS Lookback: "
+            f"{self.trend_bos_lookback}"
+        )
+
+        print(
+            f"Recent BOS Direction: "
+            f"{self.recent_bos_direction}"
+        )
+
+        print(
+            f"Consecutive Same BOS: "
+            f"{self._get_consecutive_bos_count()}"
+        )
+
+        print(
+            f"BOS Bullish Score: "
+            f"{self.bullish_bos_score}"
+        )
+
+        print(
+            f"BOS Bearish Score: "
+            f"{self.bearish_bos_score}"
+        )
+
+        print(
+            f"BOS Dominance: "
+            f"{self.bos_dominance:.2f}"
         )
 
         print(
@@ -1644,6 +2199,40 @@ class MarketStructure:
         )
 
     # ======================================================
+    # Consecutive BOS Helper
+    # ======================================================
+
+    def _get_consecutive_bos_count(self):
+
+        recent_bos = (
+            self.get_recent_bos_events()
+        )
+
+        if not recent_bos:
+
+            return 0
+
+        latest_direction = (
+            recent_bos[-1].direction
+        )
+
+        count = 0
+
+        for event in reversed(
+            recent_bos
+        ):
+
+            if event.direction == latest_direction:
+
+                count += 1
+
+            else:
+
+                break
+
+        return count
+
+    # ======================================================
     # Engine Information
     # ======================================================
 
@@ -1656,19 +2245,30 @@ class MarketStructure:
                 "Market Structure Engine",
 
             "version":
-                "V20.3",
+                "V20.4",
 
             "status":
                 "Production",
 
             "trend_logic":
-                "Recent confirmed structure with weighted recency",
+                (
+                    "Recent structure + "
+                    "confirmed body-close BOS "
+                    "with BOS recency priority"
+                ),
 
             "trend_structure_lookback":
                 12,
 
+            "trend_bos_lookback":
+                8,
+
+            "minimum_bos_confirmation":
+                2,
+
             "developer":
                 "Liquidity Hunter AI"
+
         }
 
     # ======================================================
@@ -1704,8 +2304,18 @@ class MarketStructure:
         )
 
         print(
-            f"Trend Lookback : "
+            f"Trend Structure Lookback : "
             f"{info['trend_structure_lookback']}"
+        )
+
+        print(
+            f"Trend BOS Lookback : "
+            f"{info['trend_bos_lookback']}"
+        )
+
+        print(
+            f"Minimum BOS Confirmation : "
+            f"{info['minimum_bos_confirmation']}"
         )
 
         print(

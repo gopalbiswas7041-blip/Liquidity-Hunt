@@ -1,3 +1,22 @@
+"""
+Liquidity Hunter AI
+Version : V20.5 Live Candle Sync
+File    : ui/chart_widget.py
+
+Responsibilities
+----------------
+- Lightweight Charts WebEngine
+- Historical candle loading
+- Live candle updates
+- Historical/live timestamp protection
+- Same-timestamp update ordering
+- Stale queued signal protection
+- Pending chart data
+- Pending AI signal
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
 import json
 
@@ -6,15 +25,32 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PySide6.QtWebEngineWidgets import QWebEngineView
+
+from PySide6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+)
+
+from PySide6.QtWebEngineWidgets import (
+    QWebEngineView,
+)
 
 
 class ChartWidget(QWidget):
 
+    # ====================================================
+    # Signals
+    # ====================================================
+
     live_candle_signal = Signal(dict)
 
+    # ====================================================
+    # Initialization
+    # ====================================================
+
     def __init__(self):
+
         super().__init__()
 
         # ====================================================
@@ -25,30 +61,38 @@ class ChartWidget(QWidget):
 
         self.pending_candles = None
 
-        # Pending AI signal
         self.pending_signal = None
 
         # ====================================================
         # LIVE CANDLE ORDER PROTECTION
         # ====================================================
 
-        # Latest candle timestamp currently known by ChartWidget.
+        # Latest candle timestamp known by the chart.
+        self._last_chart_candle_time = None
+
+        # Latest live candle timestamp.
+        self._last_live_candle_time = None
+
+        # ----------------------------------------------------
+        # Monotonic live update sequence.
         #
-        # This prevents an old/stale candle from being sent
-        # to Lightweight Charts after a newer candle arrived.
+        # IMPORTANT:
+        #
+        # Timestamp alone cannot detect an old queued update
+        # when multiple updates belong to the same candle.
         #
         # Example:
         #
-        # 19:22 -> 1786283520
-        # 19:23 -> 1786283580
+        # seq 101 -> close 63491.72
+        # seq 102 -> close 63491.83
         #
-        # If 19:22 arrives again after 19:23,
-        # it will be rejected.
-        self._last_chart_candle_time = None
+        # If seq 101 reaches the GUI after seq 102,
+        # it must be rejected.
+        # ----------------------------------------------------
 
-        # Latest live candle timestamp accepted by the
-        # live update pipeline.
-        self._last_live_candle_time = None
+        self._live_update_sequence = 0
+
+        self._last_applied_live_sequence = 0
 
         # ====================================================
         # Layout
@@ -56,7 +100,9 @@ class ChartWidget(QWidget):
 
         layout = QVBoxLayout(self)
 
-        title = QLabel("📈 LIVE MARKET CHART")
+        title = QLabel(
+            "📈 LIVE MARKET CHART"
+        )
 
         title.setStyleSheet("""
             QLabel{
@@ -103,29 +149,50 @@ class ChartWidget(QWidget):
         )
 
         print("CONNECT DONE")
-        print(self._update_last_candle_gui)
+        print(
+            self._update_last_candle_gui
+        )
 
     # ========================================================
     # CHART LOADED
     # ========================================================
 
-    def _on_chart_loaded(self, ok):
+    def _on_chart_loaded(
+        self,
+        ok,
+    ):
 
-        print(">>> _on_chart_loaded() CALLED <<<")
+        print(
+            ">>> _on_chart_loaded() CALLED <<<"
+        )
 
         self.chart_ready = ok
 
-        print("===================================")
-        print("Chart Loaded :", ok)
-        print("===================================")
+        print(
+            "==================================="
+        )
+
+        print(
+            "Chart Loaded :",
+            ok
+        )
+
+        print(
+            "==================================="
+        )
 
         # ----------------------------------------------------
         # Pending Historical Candles
         # ----------------------------------------------------
 
-        if ok and self.pending_candles is not None:
+        if (
+            ok
+            and self.pending_candles is not None
+        ):
 
-            print("Sending Pending Candle Data...")
+            print(
+                "Sending Pending Candle Data..."
+            )
 
             data = self.pending_candles
 
@@ -135,27 +202,39 @@ class ChartWidget(QWidget):
 
         else:
 
-            print("No Pending Candle Data")
+            print(
+                "No Pending Candle Data"
+            )
 
         # ----------------------------------------------------
         # Pending AI Signal
         # ----------------------------------------------------
 
-        if ok and self.pending_signal is not None:
+        if (
+            ok
+            and self.pending_signal is not None
+        ):
 
-            print("Sending Pending Trade Signal...")
+            print(
+                "Sending Pending Trade Signal..."
+            )
 
             signal = self.pending_signal
 
             self.pending_signal = None
 
-            self.show_trade_signal(signal)
+            self.show_trade_signal(
+                signal
+            )
 
     # ========================================================
     # DATAFRAME -> CANDLE LIST
     # ========================================================
 
-    def _convert_dataframe(self, df):
+    def _convert_dataframe(
+        self,
+        df,
+    ):
 
         if df is None:
             return []
@@ -167,34 +246,77 @@ class ChartWidget(QWidget):
 
         for index, row in df.iterrows():
 
+            try:
+
+                timestamp = (
+                    int(
+                        index.timestamp()
+                    )
+                )
+
+            except Exception as exc:
+
+                print(
+                    "HIST TIMESTAMP ERROR:",
+                    exc,
+                )
+
+                continue
+
             print(
                 "HIST DEBUG:",
                 index,
-                index.tzinfo,
-                index.timestamp(),
+                getattr(
+                    index,
+                    "tzinfo",
+                    None,
+                ),
+                timestamp,
             )
 
             candles.append({
 
-                "time": int(index.timestamp()),
+                "time": timestamp,
 
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"])
+                "open": float(
+                    row["Open"]
+                ),
 
+                "high": float(
+                    row["High"]
+                ),
+
+                "low": float(
+                    row["Low"]
+                ),
+
+                "close": float(
+                    row["Close"]
+                ),
             })
 
         if not candles:
             return []
 
-        print("========== FIRST CANDLE ==========")
-        print(candles[0])
+        print(
+            "========== FIRST CANDLE =========="
+        )
 
-        print("========== LAST CANDLE ==========")
-        print(candles[-1])
+        print(
+            candles[0]
+        )
 
-        print("==================================")
+        print(
+            "========== LAST CANDLE =========="
+        )
+
+        print(
+            candles[-1]
+        )
+
+        print(
+            "=================================="
+        )
 
         return candles
 
@@ -202,13 +324,18 @@ class ChartWidget(QWidget):
     # SET HISTORICAL CHART DATA
     # ========================================================
 
-    def set_chart_data(self, dataframe):
+    def set_chart_data(
+        self,
+        dataframe,
+    ):
 
-        print("set_chart_data() called")
+        print(
+            "set_chart_data() called"
+        )
 
         print(
             "Chart Ready :",
-            self.chart_ready
+            self.chart_ready,
         )
 
         # ----------------------------------------------------
@@ -218,7 +345,8 @@ class ChartWidget(QWidget):
         if not self.chart_ready:
 
             print(
-                "Chart not ready. Saving pending candles."
+                "Chart not ready. "
+                "Saving pending candles."
             )
 
             self.pending_candles = dataframe
@@ -247,8 +375,7 @@ class ChartWidget(QWidget):
         )
 
         # ====================================================
-        # IMPORTANT:
-        # Register latest historical candle timestamp.
+        # Register Latest Historical Candle
         # ====================================================
 
         try:
@@ -261,24 +388,32 @@ class ChartWidget(QWidget):
                 latest_time
             )
 
-            # Reset live timestamp when a completely
-            # new historical dataset is loaded.
-            self._last_live_candle_time = None
+            self._last_live_candle_time = (
+                None
+            )
+
+            # ----------------------------------------------
+            # Reset live sequence for new dataset
+            # ----------------------------------------------
+
+            self._live_update_sequence = 0
+
+            self._last_applied_live_sequence = 0
 
             print(
                 "Chart Latest Candle Time :",
-                self._last_chart_candle_time
+                self._last_chart_candle_time,
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             print(
                 "Latest candle time error :",
-                e
+                exc,
             )
 
         # ----------------------------------------------------
-        # Send data to JavaScript
+        # Send historical data to JavaScript
         # ----------------------------------------------------
 
         js = (
@@ -295,13 +430,18 @@ class ChartWidget(QWidget):
     # LIVE CANDLE UPDATE
     # ========================================================
 
-    def update_last_candle(self, candle):
+    def update_last_candle(
+        self,
+        candle,
+    ):
 
         print(
             "ChartWidget.update_last_candle() CALLED"
         )
 
-        print(candle)
+        print(
+            candle
+        )
 
         # ----------------------------------------------------
         # Basic validation
@@ -310,7 +450,8 @@ class ChartWidget(QWidget):
         if not self.chart_ready:
 
             print(
-                "LIVE UPDATE IGNORED: Chart not ready"
+                "LIVE UPDATE IGNORED: "
+                "Chart not ready"
             )
 
             return
@@ -318,7 +459,8 @@ class ChartWidget(QWidget):
         if candle is None:
 
             print(
-                "LIVE UPDATE IGNORED: Candle is None"
+                "LIVE UPDATE IGNORED: "
+                "Candle is None"
             )
 
             return
@@ -333,11 +475,12 @@ class ChartWidget(QWidget):
                 candle.timestamp.timestamp()
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             print(
-                "LIVE UPDATE IGNORED: Invalid timestamp",
-                e
+                "LIVE UPDATE IGNORED: "
+                "Invalid timestamp",
+                exc,
             )
 
             return
@@ -350,23 +493,25 @@ class ChartWidget(QWidget):
         )
 
         # ====================================================
-        # LIVE CANDLE ORDER GUARD
+        # Timestamp Ordering
         # ====================================================
 
-        last_time = self._last_chart_candle_time
+        last_time = (
+            self._last_chart_candle_time
+        )
 
         print(
             "Last Chart Candle Time :",
-            last_time
+            last_time,
         )
 
         print(
             "Incoming Candle Time    :",
-            candle_timestamp
+            candle_timestamp,
         )
 
         # ----------------------------------------------------
-        # STALE CANDLE
+        # Older candle
         # ----------------------------------------------------
 
         if (
@@ -380,24 +525,19 @@ class ChartWidget(QWidget):
 
             print(
                 "Incoming :",
-                candle_timestamp
+                candle_timestamp,
             )
 
             print(
                 "Latest   :",
-                last_time
-            )
-
-            print(
-                "Reason   : Incoming candle is older "
-                "than the latest chart candle."
+                last_time,
             )
 
             return
 
-        # ====================================================
-        # DUPLICATE / SAME CANDLE
-        # ====================================================
+        # ----------------------------------------------------
+        # Same candle
+        # ----------------------------------------------------
 
         if (
             last_time is not None
@@ -409,12 +549,13 @@ class ChartWidget(QWidget):
             )
 
             print(
-                "Same timestamp -> Updating current candle"
+                "Same timestamp -> "
+                "Updating current candle"
             )
 
-        # ====================================================
-        # NEWER CANDLE
-        # ====================================================
+        # ----------------------------------------------------
+        # New candle
+        # ----------------------------------------------------
 
         elif (
             last_time is None
@@ -425,29 +566,58 @@ class ChartWidget(QWidget):
                 "🟢 NEWER LIVE CANDLE ACCEPTED"
             )
 
-        # ----------------------------------------------------
-        # Build candle payload
-        # ----------------------------------------------------
+        # ====================================================
+        # Generate Monotonic Sequence
+        # ====================================================
+
+        self._live_update_sequence += 1
+
+        update_sequence = (
+            self._live_update_sequence
+        )
+
+        # ====================================================
+        # Build Internal Payload
+        # ====================================================
 
         candle_data = {
 
-            "time": candle_timestamp,
+            "time":
+                candle_timestamp,
 
-            "open": float(candle.open),
-            "high": float(candle.high),
-            "low": float(candle.low),
-            "close": float(candle.close)
+            "open":
+                float(candle.open),
 
+            "high":
+                float(candle.high),
+
+            "low":
+                float(candle.low),
+
+            "close":
+                float(candle.close),
+
+            "_seq":
+                update_sequence,
         }
 
         print(
             "========== LIVE CANDLE =========="
         )
 
-        print(candle_data)
+        print(
+            candle_data
+        )
 
         print(
-            type(candle_data["time"])
+            "Sequence :",
+            update_sequence,
+        )
+
+        print(
+            type(
+                candle_data["time"]
+            )
         )
 
         print(
@@ -455,20 +625,17 @@ class ChartWidget(QWidget):
         )
 
         # ----------------------------------------------------
-        # Widget destroyed?
+        # WebView safety
         # ----------------------------------------------------
 
         if self.webview is None:
 
             print(
-                "LIVE UPDATE IGNORED: WebView missing"
+                "LIVE UPDATE IGNORED: "
+                "WebView missing"
             )
 
             return
-
-        # ----------------------------------------------------
-        # Get page safely
-        # ----------------------------------------------------
 
         try:
 
@@ -479,15 +646,12 @@ class ChartWidget(QWidget):
             return
 
         if page is None:
-
             return
 
         # ====================================================
-        # IMPORTANT:
-        # Update Python-side latest timestamp BEFORE emit.
+        # IMPORTANT
         #
-        # This prevents a second stale queued signal from
-        # being accepted during candle rollover.
+        # Update timestamp state immediately.
         # ====================================================
 
         self._last_chart_candle_time = (
@@ -500,22 +664,17 @@ class ChartWidget(QWidget):
 
         print(
             "Accepted Candle Timestamp :",
-            self._last_chart_candle_time
-        )
-
-        # ----------------------------------------------------
-        # Emit to GUI thread
-        # ----------------------------------------------------
-
-        print(type(self))
-
-        print(
-            type(self.live_candle_signal)
+            self._last_chart_candle_time,
         )
 
         print(
-            self.live_candle_signal
+            "Accepted Update Sequence  :",
+            update_sequence,
         )
+
+        # ----------------------------------------------------
+        # Emit
+        # ----------------------------------------------------
 
         self.live_candle_signal.emit(
             candle_data
@@ -528,7 +687,7 @@ class ChartWidget(QWidget):
     @Slot(dict)
     def _update_last_candle_gui(
         self,
-        candle_data
+        candle_data,
     ):
 
         try:
@@ -537,15 +696,86 @@ class ChartWidget(QWidget):
                 "GUI SLOT CALLED"
             )
 
-            print(candle_data)
+            print(
+                candle_data
+            )
 
             if not self.chart_ready:
+                return
+
+            # =================================================
+            # Sequence Validation
+            # =================================================
+
+            try:
+
+                incoming_sequence = int(
+                    candle_data["_seq"]
+                )
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+
+                print(
+                    "⚠️ GUI UPDATE IGNORED: "
+                    "Invalid sequence"
+                )
 
                 return
 
-            # ------------------------------------------------
-            # SECOND SAFETY CHECK
-            # ------------------------------------------------
+            latest_sequence = (
+                self._last_applied_live_sequence
+            )
+
+            print(
+                "Incoming Sequence :",
+                incoming_sequence,
+            )
+
+            print(
+                "Latest Sequence   :",
+                latest_sequence,
+            )
+
+            # -------------------------------------------------
+            # Old queued update
+            # -------------------------------------------------
+
+            if (
+                incoming_sequence
+                < latest_sequence
+            ):
+
+                print(
+                    "⚠️ GUI STALE UPDATE IGNORED"
+                )
+
+                print(
+                    "Incoming Sequence :",
+                    incoming_sequence,
+                )
+
+                print(
+                    "Latest Sequence   :",
+                    latest_sequence,
+                )
+
+                return
+
+            # -------------------------------------------------
+            # Mark sequence as applied
+            # -------------------------------------------------
+
+            self._last_applied_live_sequence = (
+                incoming_sequence
+            )
+
+            # =================================================
+            # Timestamp Validation
+            # =================================================
 
             incoming_time = int(
                 candle_data["time"]
@@ -566,34 +796,70 @@ class ChartWidget(QWidget):
 
                 print(
                     "Incoming :",
-                    incoming_time
+                    incoming_time,
                 )
 
                 print(
                     "Latest   :",
-                    latest_time
+                    latest_time,
                 )
 
                 return
 
-            # ------------------------------------------------
-            # JavaScript call
-            # ------------------------------------------------
+            # =================================================
+            # Build JS-only payload
+            #
+            # _seq is NOT sent to JavaScript.
+            # =================================================
+
+            js_candle = {
+
+                "time":
+                    incoming_time,
+
+                "open":
+                    float(
+                        candle_data["open"]
+                    ),
+
+                "high":
+                    float(
+                        candle_data["high"]
+                    ),
+
+                "low":
+                    float(
+                        candle_data["low"]
+                    ),
+
+                "close":
+                    float(
+                        candle_data["close"]
+                    ),
+            }
+
+            # =================================================
+            # JavaScript
+            # =================================================
 
             js = (
                 "window.updateLastCandle("
-                + json.dumps(candle_data)
+                + json.dumps(
+                    js_candle
+                )
                 + ");"
             )
 
-            print(js)
+            print(
+                js
+            )
 
             self.webview.page().runJavaScript(
                 js,
                 lambda result: print(
                     "JS Returned:",
-                    result
-                )
+                    result,
+                ),
             )
 
         except Exception:
@@ -606,7 +872,10 @@ class ChartWidget(QWidget):
     # AI TRADE SIGNAL OVERLAY
     # ========================================================
 
-    def show_trade_signal(self, signal):
+    def show_trade_signal(
+        self,
+        signal,
+    ):
 
         try:
 
@@ -639,14 +908,16 @@ class ChartWidget(QWidget):
                 "Sending Trade Signal To JS"
             )
 
-            print(signal)
+            print(
+                signal
+            )
 
             self.webview.page().runJavaScript(
                 js,
                 lambda result: print(
                     "Trade Signal JS Returned:",
-                    result
-                )
+                    result,
+                ),
             )
 
         except Exception:

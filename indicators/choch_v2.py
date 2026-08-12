@@ -7,19 +7,16 @@ from typing import Any, Dict, Optional
 # Liquidity Hunter AI
 # CHoCH V2.5
 #
-# V20.2 Compatible Smart Money Reversal Engine
+# Production Protected-Structure Reversal Engine
 #
-# ACTIVE LIQUIDITY + PROTECTED STRUCTURE VALIDATION
+# Pipeline
+# ----------------------------------------------------------
 #
-# Pipeline:
-#
-# Liquidity Sweep
+# Active Liquidity
 #       ↓
-# ACTIVE until NEWER sweep
+# Protected LH / HL
 #       ↓
-# Protected HL / LH
-#       ↓
-# Protected Structure Validation
+# Structure Validation
 #       ↓
 # Protected Level Integrity
 #       ↓
@@ -29,24 +26,12 @@ from typing import Any, Dict, Optional
 #       ↓
 # CHoCH Confirmation
 #
-# IMPORTANT:
+# Important
+# ----------------------------------------------------------
 #
 # Liquidity does NOT expire by candle age.
 #
-# Example:
-#
-# Sweep at candle 89
-# Current candle 100
-# Age = 11
-#
-# Still ACTIVE if no newer sweep exists.
-#
-# When candle 105 creates a new sweep:
-#
-# Old Sweep → INACTIVE
-# New Sweep → ACTIVE
-#
-# V2.5 PROTECTED STRUCTURE:
+# Latest sweep remains ACTIVE until a newer sweep appears.
 #
 # BUY:
 #
@@ -56,9 +41,11 @@ from typing import Any, Dict, Optional
 #    ↓
 #   Bearish Sweep
 #    ↓
-#   Protected LH remains intact
+#   Protected LH
 #    ↓
-#   Close above Protected LH
+#   Body Close Above LH
+#    ↓
+#   Bullish Displacement
 #    ↓
 #   Bullish CHoCH
 #
@@ -70,50 +57,75 @@ from typing import Any, Dict, Optional
 #    ↓
 #   Bullish Sweep
 #    ↓
-#   Protected HL remains intact
+#   Protected HL
 #    ↓
-#   Close below Protected HL
+#   Body Close Below HL
+#    ↓
+#   Bearish Displacement
 #    ↓
 #   Bearish CHoCH
 #
-# Compatibility:
-# - MarketStructure V20.2
-# - LiquiditySweepV2.2
-# - ConfluenceEngine
-# - SignalEngine
+# Compatibility
+# ----------------------------------------------------------
+#
+# MarketStructure V20.3
+# LiquiditySweepV2
+# ConfluenceEngine
+# SignalEngine
 # ==========================================================
 
 
 class CHoCHV2:
 
+    # ======================================================
+    # INITIALIZATION
+    # ======================================================
+
     def __init__(self):
 
-        print("CHoCH V2.5 Engine Initialized")
+        print(
+            "CHoCH V2.5 Engine Initialized"
+        )
 
         # --------------------------------------------------
-        # Scoring Weights
+        # Scoring
         # --------------------------------------------------
 
         self.body_break_score = 30
+
         self.displacement_score = 25
+
         self.liquidity_score = 25
+
         self.trend_confirmation_score = 20
 
         self.max_score = 100
 
         # --------------------------------------------------
-        # Displacement Settings
+        # Displacement
         # --------------------------------------------------
 
         self.displacement_ratio = 0.60
 
+        # --------------------------------------------------
+        # Confirmation Threshold
+        # --------------------------------------------------
+
+        self.confirmation_threshold = 80
+
+        self.wait_threshold = 60
+
     # ======================================================
-    # Default Result
+    # DEFAULT RESULT
     # ======================================================
 
     def create_result(self):
 
         return {
+
+            # ------------------------------------------------
+            # Final
+            # ------------------------------------------------
 
             "choch": False,
 
@@ -127,15 +139,19 @@ class CHoCHV2:
 
             "trend_shift": False,
 
+            # ------------------------------------------------
+            # Confirmation Components
+            # ------------------------------------------------
+
             "body_break": False,
 
             "displacement": False,
 
             "liquidity_confirmed": False,
 
-            # --------------------------------------------------
-            # V2.5 Protected Structure
-            # --------------------------------------------------
+            # ------------------------------------------------
+            # Protected Structure
+            # ------------------------------------------------
 
             "protected_structure": False,
 
@@ -151,9 +167,9 @@ class CHoCHV2:
 
             "reversal_level": None,
 
-            # --------------------------------------------------
+            # ------------------------------------------------
             # Liquidity
-            # --------------------------------------------------
+            # ------------------------------------------------
 
             "liquidity_index": None,
 
@@ -163,22 +179,22 @@ class CHoCHV2:
 
             "liquidity_type": None,
 
-            # --------------------------------------------------
+            # ------------------------------------------------
             # CHoCH
-            # --------------------------------------------------
+            # ------------------------------------------------
 
             "choch_index": None,
 
-            # --------------------------------------------------
+            # ------------------------------------------------
             # Reasons
-            # --------------------------------------------------
+            # ------------------------------------------------
 
             "reasons": []
 
         }
 
     # ======================================================
-    # Add Reason
+    # ADD REASON
     # ======================================================
 
     def add_reason(
@@ -189,10 +205,12 @@ class CHoCHV2:
 
         if reason not in result["reasons"]:
 
-            result["reasons"].append(reason)
+            result["reasons"].append(
+                reason
+            )
 
     # ======================================================
-    # Body Break
+    # BODY BREAK
     # ======================================================
 
     def is_body_break(
@@ -201,6 +219,23 @@ class CHoCHV2:
         level: float,
         direction: str
     ) -> bool:
+
+        try:
+
+            close_price = float(
+                close_price
+            )
+
+            level = float(
+                level
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return False
 
         if direction == "BUY":
 
@@ -213,7 +248,7 @@ class CHoCHV2:
         return False
 
     # ======================================================
-    # Displacement
+    # DISPLACEMENT
     # ======================================================
 
     def is_displacement(
@@ -222,50 +257,80 @@ class CHoCHV2:
         direction: Optional[str] = None
     ) -> bool:
 
-        body = abs(
-            float(candle["Close"]) -
-            float(candle["Open"])
-        )
+        try:
+
+            open_price = float(
+                candle["Open"]
+            )
+
+            high_price = float(
+                candle["High"]
+            )
+
+            low_price = float(
+                candle["Low"]
+            )
+
+            close_price = float(
+                candle["Close"]
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError
+        ):
+
+            return False
 
         candle_range = (
-            float(candle["High"]) -
-            float(candle["Low"])
+            high_price -
+            low_price
         )
 
         if candle_range <= 0:
 
             return False
 
-        body_ratio = (
-            body / candle_range
+        body = abs(
+            close_price -
+            open_price
         )
 
-        if body_ratio < self.displacement_ratio:
+        body_ratio = (
+            body /
+            candle_range
+        )
+
+        if (
+            body_ratio <
+            self.displacement_ratio
+        ):
 
             return False
 
         # --------------------------------------------------
-        # Directional validation
+        # Directional confirmation
         # --------------------------------------------------
 
         if direction == "BUY":
 
             return (
-                float(candle["Close"]) >
-                float(candle["Open"])
+                close_price >
+                open_price
             )
 
         if direction == "SELL":
 
             return (
-                float(candle["Close"]) <
-                float(candle["Open"])
+                close_price <
+                open_price
             )
 
         return True
 
     # ======================================================
-    # Quality
+    # QUALITY
     # ======================================================
 
     def get_quality(
@@ -292,14 +357,7 @@ class CHoCHV2:
         return "D"
 
     # ======================================================
-    # Get Latest ACTIVE Liquidity
-    #
-    # IMPORTANT:
-    #
-    # There is NO candle-age expiration.
-    #
-    # The latest sweep remains ACTIVE until a newer
-    # liquidity sweep appears.
+    # GET LATEST ACTIVE LIQUIDITY
     # ======================================================
 
     def _get_latest_liquidity(
@@ -318,41 +376,54 @@ class CHoCHV2:
 
             return None
 
-        # --------------------------------------------------
-        # Keep only valid liquidity events
-        # --------------------------------------------------
+        valid = []
 
-        valid = [
+        for item in liquidity_sweeps:
 
-            item
+            if not isinstance(
+                item,
+                dict
+            ):
 
-            for item in liquidity_sweeps
+                continue
 
-            if isinstance(item, dict)
+            if "index" not in item:
 
-            and "index" in item
+                continue
 
-            and "type" in item
+            if "type" not in item:
 
-        ]
+                continue
+
+            try:
+
+                int(
+                    item["index"]
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            valid.append(
+                item
+            )
 
         if not valid:
 
             return None
 
-        # --------------------------------------------------
-        # Latest chronological sweep is ACTIVE
-        # --------------------------------------------------
-
         return max(
             valid,
-            key=lambda item: int(
-                item["index"]
-            )
+            key=lambda item:
+                int(item["index"])
         )
 
     # ======================================================
-    # Load Market Structure Engine
+    # LOAD MARKET STRUCTURE
     # ======================================================
 
     def _load_structure_engine(
@@ -362,22 +433,27 @@ class CHoCHV2:
     ):
 
         # --------------------------------------------------
-        # If actual MarketStructure object is supplied,
-        # use it directly.
+        # Existing engine
         # --------------------------------------------------
 
-        if hasattr(
-            market_structure,
-            "get_swing_highs"
-        ) and hasattr(
-            market_structure,
-            "get_swing_lows"
+        if (
+            market_structure is not None
+            and
+            hasattr(
+                market_structure,
+                "get_swing_highs"
+            )
+            and
+            hasattr(
+                market_structure,
+                "get_swing_lows"
+            )
         ):
 
             return market_structure
 
         # --------------------------------------------------
-        # Otherwise rebuild V20.2 structure internally.
+        # Build automatically
         # --------------------------------------------------
 
         try:
@@ -388,7 +464,9 @@ class CHoCHV2:
 
             ms = MarketStructure()
 
-            ms.detect(df)
+            ms.detect(
+                df
+            )
 
             return ms
 
@@ -396,25 +474,14 @@ class CHoCHV2:
 
             print(
                 "CHoCH V2.5: "
-                f"Market Structure Load Error: {error}"
+                "Market Structure Load Error: "
+                f"{error}"
             )
 
             return None
 
     # ======================================================
-    # Find Protected Bullish Structure
-    #
-    # BUY reversal:
-    #
-    # Bearish Sweep
-    #       ↓
-    # Latest LH before sweep
-    #       ↓
-    # Protected LH
-    #
-    # The LH is only a CANDIDATE here.
-    #
-    # V2.5 validation happens separately.
+    # FIND PROTECTED LH
     # ======================================================
 
     def _find_protected_lh(
@@ -450,7 +517,8 @@ class CHoCHV2:
                 ""
             ) == "LH"
 
-            and getattr(
+            and
+            getattr(
                 swing,
                 "index",
                 -1
@@ -464,23 +532,12 @@ class CHoCHV2:
 
         return max(
             candidates,
-            key=lambda swing: swing.index
+            key=lambda swing:
+                swing.index
         )
 
     # ======================================================
-    # Find Protected Bearish Structure
-    #
-    # SELL reversal:
-    #
-    # Bullish Sweep
-    #       ↓
-    # Latest HL before sweep
-    #       ↓
-    # Protected HL
-    #
-    # The HL is only a CANDIDATE here.
-    #
-    # V2.5 validation happens separately.
+    # FIND PROTECTED HL
     # ======================================================
 
     def _find_protected_hl(
@@ -516,7 +573,8 @@ class CHoCHV2:
                 ""
             ) == "HL"
 
-            and getattr(
+            and
+            getattr(
                 swing,
                 "index",
                 -1
@@ -530,30 +588,19 @@ class CHoCHV2:
 
         return max(
             candidates,
-            key=lambda swing: swing.index
+            key=lambda swing:
+                swing.index
         )
 
     # ======================================================
-    # CHoCH V2.5
+    # VALIDATE PROTECTED LH
     #
-    # Validate Protected LH
+    # BUY:
     #
-    # BUY CHoCH:
+    # LH → LL → Bearish Sweep
     #
-    #   LH
-    #    ↓
-    #   LL
-    #    ↓
-    #   Bearish Sweep
-    #
-    # The candidate LH must:
-    #
-    # 1. Actually be labelled LH
-    # 2. Exist before liquidity sweep
-    # 3. Have bearish continuation through an LL
-    #    before the sweep
-    #
-    # Candle-level integrity is validated separately.
+    # The protected LH must have bearish continuation
+    # before the liquidity event.
     # ======================================================
 
     def _validate_protected_lh(
@@ -563,11 +610,11 @@ class CHoCHV2:
         liquidity_index: int
     ) -> bool:
 
-        if market_structure_engine is None:
-
-            return False
-
-        if protected_lh is None:
+        if (
+            market_structure_engine is None
+            or
+            protected_lh is None
+        ):
 
             return False
 
@@ -585,25 +632,13 @@ class CHoCHV2:
 
             return False
 
-        # --------------------------------------------------
-        # Candidate must actually be LH
-        # --------------------------------------------------
-
         if protected_label != "LH":
 
             return False
 
-        # --------------------------------------------------
-        # LH must exist before active sweep
-        # --------------------------------------------------
-
         if protected_index >= liquidity_index:
 
             return False
-
-        # --------------------------------------------------
-        # Get swing lows
-        # --------------------------------------------------
 
         try:
 
@@ -616,66 +651,41 @@ class CHoCHV2:
 
             return False
 
-        # ==================================================
-        # Bearish continuation validation
-        #
-        # There must be at least one LL between the
-        # protected LH and the liquidity sweep.
-        # ==================================================
+        for swing in swing_lows:
 
-        continuation_ll = [
-
-            swing
-
-            for swing in swing_lows
-
-            if getattr(
+            label = getattr(
                 swing,
                 "label",
                 ""
-            ) == "LL"
+            )
 
-            and getattr(
+            index = getattr(
                 swing,
                 "index",
                 -1
-            ) > protected_index
+            )
 
-            and getattr(
-                swing,
-                "index",
-                -1
-            ) < liquidity_index
+            if (
+                label == "LL"
+                and
+                protected_index <
+                index <
+                liquidity_index
+            ):
 
-        ]
+                return True
 
-        if not continuation_ll:
-
-            return False
-
-        return True
+        return False
 
     # ======================================================
-    # CHoCH V2.5
+    # VALIDATE PROTECTED HL
     #
-    # Validate Protected HL
+    # SELL:
     #
-    # SELL CHoCH:
+    # HL → HH → Bullish Sweep
     #
-    #   HL
-    #    ↓
-    #   HH
-    #    ↓
-    #   Bullish Sweep
-    #
-    # The candidate HL must:
-    #
-    # 1. Actually be labelled HL
-    # 2. Exist before liquidity sweep
-    # 3. Have bullish continuation through an HH
-    #    before the sweep
-    #
-    # Candle-level integrity is validated separately.
+    # The protected HL must have bullish continuation
+    # before the liquidity event.
     # ======================================================
 
     def _validate_protected_hl(
@@ -685,11 +695,11 @@ class CHoCHV2:
         liquidity_index: int
     ) -> bool:
 
-        if market_structure_engine is None:
-
-            return False
-
-        if protected_hl is None:
+        if (
+            market_structure_engine is None
+            or
+            protected_hl is None
+        ):
 
             return False
 
@@ -707,25 +717,13 @@ class CHoCHV2:
 
             return False
 
-        # --------------------------------------------------
-        # Candidate must actually be HL
-        # --------------------------------------------------
-
         if protected_label != "HL":
 
             return False
 
-        # --------------------------------------------------
-        # HL must exist before active sweep
-        # --------------------------------------------------
-
         if protected_index >= liquidity_index:
 
             return False
-
-        # --------------------------------------------------
-        # Get swing highs
-        # --------------------------------------------------
 
         try:
 
@@ -738,72 +736,44 @@ class CHoCHV2:
 
             return False
 
-        # ==================================================
-        # Bullish continuation validation
-        #
-        # There must be at least one HH between the
-        # protected HL and the liquidity sweep.
-        # ==================================================
+        for swing in swing_highs:
 
-        continuation_hh = [
-
-            swing
-
-            for swing in swing_highs
-
-            if getattr(
+            label = getattr(
                 swing,
                 "label",
                 ""
-            ) == "HH"
+            )
 
-            and getattr(
+            index = getattr(
                 swing,
                 "index",
                 -1
-            ) > protected_index
+            )
 
-            and getattr(
-                swing,
-                "index",
-                -1
-            ) < liquidity_index
+            if (
+                label == "HH"
+                and
+                protected_index <
+                index <
+                liquidity_index
+            ):
 
-        ]
+                return True
 
-        if not continuation_hh:
-
-            return False
-
-        return True
+        return False
 
     # ======================================================
-    # CHoCH V2.5
-    #
-    # Protected Level Integrity
+    # PROTECTED LEVEL INTEGRITY
     #
     # BUY:
     #
-    # Protected LH
-    #       ↓
-    # No body close ABOVE LH
-    #       ↓
-    # Bearish Sweep
+    # No body close above protected LH
+    # before or during sweep.
     #
     # SELL:
     #
-    # Protected HL
-    #       ↓
-    # No body close BELOW HL
-    #       ↓
-    # Bullish Sweep
-    #
-    # IMPORTANT:
-    #
-    # The sweep candle itself is included.
-    #
-    # This makes sure that the protected level was still
-    # intact when the active liquidity event happened.
+    # No body close below protected HL
+    # before or during sweep.
     # ======================================================
 
     def _validate_protected_level_integrity(
@@ -837,55 +807,75 @@ class CHoCHV2:
 
         try:
 
-            closes = df["Close"].values
+            closes = (
+                df["Close"].values
+            )
 
         except Exception:
 
             return False
 
-        # ==================================================
+        # --------------------------------------------------
         # BUY
-        #
-        # Protected LH must not have been broken above
-        # before or on the liquidity sweep.
-        # ==================================================
+        # --------------------------------------------------
 
         if direction == "BUY":
 
-            for candle_index in range(
+            for index in range(
                 protected_index + 1,
                 liquidity_index + 1
             ):
 
-                close_price = float(
-                    closes[candle_index]
-                )
+                try:
 
-                if close_price > protected_level:
+                    close_price = float(
+                        closes[index]
+                    )
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+
+                    return False
+
+                if (
+                    close_price >
+                    protected_level
+                ):
 
                     return False
 
             return True
 
-        # ==================================================
+        # --------------------------------------------------
         # SELL
-        #
-        # Protected HL must not have been broken below
-        # before or on the liquidity sweep.
-        # ==================================================
+        # --------------------------------------------------
 
         if direction == "SELL":
 
-            for candle_index in range(
+            for index in range(
                 protected_index + 1,
                 liquidity_index + 1
             ):
 
-                close_price = float(
-                    closes[candle_index]
-                )
+                try:
 
-                if close_price < protected_level:
+                    close_price = float(
+                        closes[index]
+                    )
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+
+                    return False
+
+                if (
+                    close_price <
+                    protected_level
+                ):
 
                     return False
 
@@ -894,20 +884,7 @@ class CHoCHV2:
         return False
 
     # ======================================================
-    # Validate Complete Protected Structure
-    #
-    # V2.5 combines:
-    #
-    # 1. Structure validation
-    # 2. Level integrity validation
-    #
-    # Returns:
-    #
-    # {
-    #     "valid": bool,
-    #     "structure_valid": bool,
-    #     "integrity_valid": bool
-    # }
+    # COMPLETE PROTECTED STRUCTURE VALIDATION
     # ======================================================
 
     def _validate_protected_structure(
@@ -919,7 +896,7 @@ class CHoCHV2:
         direction: str
     ) -> Dict[str, bool]:
 
-        result = {
+        validation = {
 
             "valid": False,
 
@@ -931,112 +908,110 @@ class CHoCHV2:
 
         if protected is None:
 
-            return result
-
-        protected_index = getattr(
-            protected,
-            "index",
-            -1
-        )
-
-        protected_level = getattr(
-            protected,
-            "price",
-            None
-        )
-
-        if protected_index is None:
-
-            return result
-
-        if protected_level is None:
-
-            return result
+            return validation
 
         try:
 
             protected_index = int(
-                protected_index
+                protected.index
             )
 
             protected_level = float(
-                protected_level
+                protected.price
             )
 
-        except Exception:
+        except (
+            AttributeError,
+            TypeError,
+            ValueError
+        ):
 
-            return result
+            return validation
 
-        # ==================================================
+        # --------------------------------------------------
         # Structural validation
-        # ==================================================
+        # --------------------------------------------------
 
         if direction == "BUY":
 
-            result["structure_valid"] = (
-                self._validate_protected_lh(
-                    market_structure_engine,
-                    protected,
-                    liquidity_index
-                )
+            validation[
+                "structure_valid"
+            ] = self._validate_protected_lh(
+
+                market_structure_engine,
+
+                protected,
+
+                liquidity_index
+
             )
 
         elif direction == "SELL":
 
-            result["structure_valid"] = (
-                self._validate_protected_hl(
-                    market_structure_engine,
-                    protected,
-                    liquidity_index
-                )
+            validation[
+                "structure_valid"
+            ] = self._validate_protected_hl(
+
+                market_structure_engine,
+
+                protected,
+
+                liquidity_index
+
             )
 
         else:
 
-            return result
+            return validation
 
-        if not result["structure_valid"]:
+        if not validation[
+            "structure_valid"
+        ]:
 
-            return result
+            return validation
 
-        # ==================================================
-        # Candle integrity validation
-        # ==================================================
+        # --------------------------------------------------
+        # Level integrity
+        # --------------------------------------------------
 
-        result["integrity_valid"] = (
+        validation[
+            "integrity_valid"
+        ] = (
             self._validate_protected_level_integrity(
+
                 df,
+
                 protected_level,
+
                 protected_index,
+
                 liquidity_index,
+
                 direction
+
             )
         )
 
-        if not result["integrity_valid"]:
+        if not validation[
+            "integrity_valid"
+        ]:
 
-            return result
+            return validation
 
-        # ==================================================
-        # Final protected structure validation
-        # ==================================================
+        validation[
+            "valid"
+        ] = True
 
-        result["valid"] = True
-
-        return result
+        return validation
 
     # ======================================================
-    # Validate Liquidity Direction
-    #
-    # Bearish Sweep → Bullish CHoCH
-    #
-    # Bullish Sweep → Bearish CHoCH
+    # LIQUIDITY DIRECTION
     # ======================================================
 
     def _liquidity_matches_direction(
         self,
         liquidity,
-        direction
+        direction: str
     ) -> bool:
 
         if liquidity is None:
@@ -1067,7 +1042,118 @@ class CHoCHV2:
         return False
 
     # ======================================================
-    # Internal Evaluation
+    # SCORE
+    # ======================================================
+
+    def _calculate_score(
+        self,
+        result: Dict[str, Any]
+    ) -> int:
+
+        score = 0
+
+        if result.get(
+            "body_break",
+            False
+        ):
+
+            score += (
+                self.body_break_score
+            )
+
+        if result.get(
+            "displacement",
+            False
+        ):
+
+            score += (
+                self.displacement_score
+            )
+
+        if result.get(
+            "liquidity_confirmed",
+            False
+        ):
+
+            score += (
+                self.liquidity_score
+            )
+
+        if result.get(
+            "trend_shift",
+            False
+        ):
+
+            score += (
+                self.trend_confirmation_score
+            )
+
+        return max(
+            0,
+            min(
+                self.max_score,
+                score
+            )
+        )
+
+    # ======================================================
+    # FIND CHoCH BODY BREAK
+    #
+    # Search starts AFTER liquidity sweep.
+    #
+    # No candle-age expiration.
+    # ======================================================
+
+    def _find_choch_body_break(
+        self,
+        df,
+        liquidity_index: int,
+        protected_level: float,
+        direction: str
+    ):
+
+        latest_index = len(df) - 1
+
+        start_index = (
+            liquidity_index + 1
+        )
+
+        if start_index > latest_index:
+
+            return None
+
+        closes = df["Close"].values
+
+        for candle_index in range(
+            start_index,
+            latest_index + 1
+        ):
+
+            try:
+
+                close_price = float(
+                    closes[candle_index]
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            if self.is_body_break(
+                close_price,
+                protected_level,
+                direction
+            ):
+
+                return candle_index
+
+        return None
+
+    # ======================================================
+    # INTERNAL EVALUATION
     # ======================================================
 
     def _evaluate(
@@ -1079,9 +1165,9 @@ class CHoCHV2:
 
         result = self.create_result()
 
-        # --------------------------------------------------
-        # Basic Validation
-        # --------------------------------------------------
+        # ==================================================
+        # DATA VALIDATION
+        # ==================================================
 
         if df is None:
 
@@ -1120,45 +1206,71 @@ class CHoCHV2:
 
             return result
 
-        liquidity_index = int(
-            latest_liquidity["index"]
-        )
+        try:
+
+            liquidity_index = int(
+                latest_liquidity["index"]
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError
+        ):
+
+            self.add_reason(
+                result,
+                "Invalid Liquidity Index"
+            )
+
+            return result
 
         liquidity_type = str(
-            latest_liquidity["type"]
+            latest_liquidity.get(
+                "type",
+                ""
+            )
         )
 
         latest_index = len(df) - 1
+
+        # --------------------------------------------------
+        # Sweep must exist inside dataset
+        # --------------------------------------------------
+
+        if (
+            liquidity_index < 0
+            or
+            liquidity_index > latest_index
+        ):
+
+            self.add_reason(
+                result,
+                "Liquidity Index Outside Data"
+            )
+
+            return result
 
         liquidity_age = (
             latest_index -
             liquidity_index
         )
 
-        result["liquidity_index"] = (
-            liquidity_index
-        )
+        result[
+            "liquidity_index"
+        ] = liquidity_index
 
-        result["liquidity_age"] = (
-            liquidity_age
-        )
+        result[
+            "liquidity_age"
+        ] = liquidity_age
 
-        result["liquidity_status"] = (
-            "ACTIVE"
-        )
+        result[
+            "liquidity_status"
+        ] = "ACTIVE"
 
-        result["liquidity_type"] = (
-            liquidity_type
-        )
-
-        # --------------------------------------------------
-        # IMPORTANT:
-        #
-        # DO NOT reject old liquidity.
-        #
-        # Liquidity remains ACTIVE until a newer sweep
-        # replaces it.
-        # --------------------------------------------------
+        result[
+            "liquidity_type"
+        ] = liquidity_type
 
         self.add_reason(
             result,
@@ -1171,7 +1283,7 @@ class CHoCHV2:
         )
 
         # ==================================================
-        # Load V20.2 Market Structure
+        # MARKET STRUCTURE
         # ==================================================
 
         ms_engine = (
@@ -1191,17 +1303,20 @@ class CHoCHV2:
             return result
 
         # ==================================================
-        # Determine Sweep → Reversal Direction
-        #
-        # Bearish Sweep = potential BUY reversal
-        # Bullish Sweep = potential SELL reversal
+        # REVERSAL DIRECTION
         # ==================================================
 
-        if liquidity_type == "Bearish Sweep":
+        if (
+            liquidity_type ==
+            "Bearish Sweep"
+        ):
 
             direction = "BUY"
 
-        elif liquidity_type == "Bullish Sweep":
+        elif (
+            liquidity_type ==
+            "Bullish Sweep"
+        ):
 
             direction = "SELL"
 
@@ -1214,15 +1329,13 @@ class CHoCHV2:
 
             return result
 
-        result["direction"] = direction
+        result[
+            "direction"
+        ] = direction
 
         # ==================================================
-        # Find Protected Structure Candidate
+        # PROTECTED STRUCTURE
         # ==================================================
-
-        protected_level = None
-        protected_index = None
-        protected_label = None
 
         protected = None
 
@@ -1235,18 +1348,6 @@ class CHoCHV2:
                 )
             )
 
-            if protected is not None:
-
-                protected_level = float(
-                    protected.price
-                )
-
-                protected_index = int(
-                    protected.index
-                )
-
-                protected_label = "LH"
-
         elif direction == "SELL":
 
             protected = (
@@ -1256,23 +1357,7 @@ class CHoCHV2:
                 )
             )
 
-            if protected is not None:
-
-                protected_level = float(
-                    protected.price
-                )
-
-                protected_index = int(
-                    protected.index
-                )
-
-                protected_label = "HL"
-
-        # --------------------------------------------------
-        # Protected Structure Candidate Missing
-        # --------------------------------------------------
-
-        if protected_level is None:
+        if protected is None:
 
             self.add_reason(
                 result,
@@ -1281,23 +1366,52 @@ class CHoCHV2:
 
             return result
 
-        result["reversal_level"] = (
-            protected_level
-        )
+        try:
 
-        result["protected_level"] = (
-            protected_level
-        )
+            protected_level = float(
+                protected.price
+            )
 
-        result["protected_index"] = (
-            protected_index
-        )
+            protected_index = int(
+                protected.index
+            )
 
-        result["protected_label"] = (
-            protected_label
-        )
+            protected_label = str(
+                protected.label
+            )
 
-        result["protected_structure"] = True
+        except (
+            AttributeError,
+            TypeError,
+            ValueError
+        ):
+
+            self.add_reason(
+                result,
+                "Invalid Protected Structure"
+            )
+
+            return result
+
+        result[
+            "protected_structure"
+        ] = True
+
+        result[
+            "protected_level"
+        ] = protected_level
+
+        result[
+            "protected_index"
+        ] = protected_index
+
+        result[
+            "protected_label"
+        ] = protected_label
+
+        result[
+            "reversal_level"
+        ] = protected_level
 
         self.add_reason(
             result,
@@ -1305,12 +1419,10 @@ class CHoCHV2:
         )
 
         # ==================================================
-        # CHoCH V2.5
-        #
-        # Validate Protected Structure
+        # PROTECTED STRUCTURE VALIDATION
         # ==================================================
 
-        protected_validation = (
+        validation = (
             self._validate_protected_structure(
                 df,
                 ms_engine,
@@ -1321,10 +1433,10 @@ class CHoCHV2:
         )
 
         # --------------------------------------------------
-        # Structural validation
+        # Structure
         # --------------------------------------------------
 
-        if protected_validation[
+        if validation[
             "structure_valid"
         ]:
 
@@ -1343,10 +1455,10 @@ class CHoCHV2:
             return result
 
         # --------------------------------------------------
-        # Level integrity
+        # Integrity
         # --------------------------------------------------
 
-        if protected_validation[
+        if validation[
             "integrity_valid"
         ]:
 
@@ -1368,99 +1480,12 @@ class CHoCHV2:
 
             return result
 
-        # --------------------------------------------------
-        # Complete protected structure
-        # --------------------------------------------------
-
         result[
             "protected_structure_valid"
         ] = True
 
         # ==================================================
-        # Search For Opposite Body Close
-        #
-        # IMPORTANT V2.5:
-        #
-        # Search continues until CURRENT candle.
-        #
-        # There is NO 5-candle CHoCH expiration.
-        #
-        # Liquidity remains active until a newer sweep.
-        # ==================================================
-
-        closes = df["Close"].values
-
-        choch_index = None
-
-        search_start = (
-            liquidity_index + 1
-        )
-
-        if search_start > latest_index:
-
-            self.add_reason(
-                result,
-                "Waiting For Post-Sweep Candle"
-            )
-
-            return result
-
-        for candle_index in range(
-            search_start,
-            latest_index + 1
-        ):
-
-            close_price = float(
-                closes[candle_index]
-            )
-
-            if self.is_body_break(
-                close_price,
-                protected_level,
-                direction
-            ):
-
-                choch_index = candle_index
-
-                break
-
-        # --------------------------------------------------
-        # No Body Break
-        # --------------------------------------------------
-
-        if choch_index is None:
-
-            self.add_reason(
-                result,
-                "Protected Structure Not Broken"
-            )
-
-            return result
-
-        result["choch_index"] = (
-            choch_index
-        )
-
-        # ==================================================
-        # Body Break Confirmation
-        # ==================================================
-
-        result["body_break"] = True
-
-        result["trend_shift"] = True
-
-        self.add_reason(
-            result,
-            "Protected Structure Body Break"
-        )
-
-        self.add_reason(
-            result,
-            f"{protected_label} Broken"
-        )
-
-        # ==================================================
-        # Liquidity Direction Confirmation
+        # LIQUIDITY DIRECTION
         # ==================================================
 
         if self._liquidity_matches_direction(
@@ -1468,7 +1493,9 @@ class CHoCHV2:
             direction
         ):
 
-            result["liquidity_confirmed"] = True
+            result[
+                "liquidity_confirmed"
+            ] = True
 
             self.add_reason(
                 result,
@@ -1485,19 +1512,76 @@ class CHoCHV2:
             return result
 
         # ==================================================
-        # Displacement Confirmation
+        # BODY-CLOSE CHoCH
         # ==================================================
 
-        choch_candle = df.iloc[
-            choch_index
-        ]
+        choch_index = (
+            self._find_choch_body_break(
+                df,
+                liquidity_index,
+                protected_level,
+                direction
+            )
+        )
+
+        if choch_index is None:
+
+            self.add_reason(
+                result,
+                "Protected Structure Not Broken"
+            )
+
+            return result
+
+        result[
+            "choch_index"
+        ] = choch_index
+
+        result[
+            "body_break"
+        ] = True
+
+        result[
+            "trend_shift"
+        ] = True
+
+        self.add_reason(
+            result,
+            "Protected Structure Body Break"
+        )
+
+        self.add_reason(
+            result,
+            f"{protected_label} Broken"
+        )
+
+        # ==================================================
+        # DISPLACEMENT
+        # ==================================================
+
+        try:
+
+            choch_candle = df.iloc[
+                choch_index
+            ]
+
+        except Exception:
+
+            self.add_reason(
+                result,
+                "CHoCH Candle Missing"
+            )
+
+            return result
 
         if self.is_displacement(
             choch_candle,
             direction
         ):
 
-            result["displacement"] = True
+            result[
+                "displacement"
+            ] = True
 
             self.add_reason(
                 result,
@@ -1512,89 +1596,59 @@ class CHoCHV2:
             )
 
         # ==================================================
-        # Score
+        # SCORE
         # ==================================================
 
-        score = 0
-
-        # --------------------------------------------------
-        # Body Break
-        # --------------------------------------------------
-
-        if result["body_break"]:
-
-            score += (
-                self.body_break_score
-            )
-
-        # --------------------------------------------------
-        # Displacement
-        # --------------------------------------------------
-
-        if result["displacement"]:
-
-            score += (
-                self.displacement_score
-            )
-
-        # --------------------------------------------------
-        # Liquidity
-        # --------------------------------------------------
-
-        if result["liquidity_confirmed"]:
-
-            score += (
-                self.liquidity_score
-            )
-
-        # --------------------------------------------------
-        # Trend Shift
-        # --------------------------------------------------
-
-        if result["trend_shift"]:
-
-            score += (
-                self.trend_confirmation_score
-            )
-
-        # --------------------------------------------------
-        # Clamp
-        # --------------------------------------------------
-
-        score = max(
-            0,
-            min(
-                self.max_score,
-                score
+        score = (
+            self._calculate_score(
+                result
             )
         )
 
-        result["strength"] = score
+        result[
+            "strength"
+        ] = score
 
-        result["quality"] = (
-            self.get_quality(score)
+        result[
+            "quality"
+        ] = self.get_quality(
+            score
         )
 
         # ==================================================
-        # Final CHoCH Status
+        # FINAL STATUS
         # ==================================================
 
-        if score >= 80:
+        if (
+            score >=
+            self.confirmation_threshold
+        ):
 
-            result["choch"] = True
+            result[
+                "choch"
+            ] = True
 
-            result["status"] = "CONFIRMED"
+            result[
+                "status"
+            ] = "CONFIRMED"
 
             self.add_reason(
                 result,
                 "Confirmed CHoCH"
             )
 
-        elif score >= 60:
+        elif (
+            score >=
+            self.wait_threshold
+        ):
 
-            result["choch"] = False
+            result[
+                "choch"
+            ] = False
 
-            result["status"] = "WAIT"
+            result[
+                "status"
+            ] = "WAIT"
 
             self.add_reason(
                 result,
@@ -1603,9 +1657,13 @@ class CHoCHV2:
 
         else:
 
-            result["choch"] = False
+            result[
+                "choch"
+            ] = False
 
-            result["status"] = "NONE"
+            result[
+                "status"
+            ] = "NONE"
 
             self.add_reason(
                 result,
@@ -1615,7 +1673,7 @@ class CHoCHV2:
         return result
 
     # ======================================================
-    # Main Detection
+    # MAIN DETECTION
     # ======================================================
 
     def detect(
@@ -1631,9 +1689,9 @@ class CHoCHV2:
 
         result = self.create_result()
 
-        # --------------------------------------------------
-        # Validate Data
-        # --------------------------------------------------
+        # ==================================================
+        # DATA VALIDATION
+        # ==================================================
 
         if df is None:
 
@@ -1653,9 +1711,9 @@ class CHoCHV2:
 
             return result
 
-        # --------------------------------------------------
-        # Auto-load Market Structure
-        # --------------------------------------------------
+        # ==================================================
+        # AUTO MARKET STRUCTURE
+        # ==================================================
 
         if market_structure is None:
 
@@ -1667,7 +1725,9 @@ class CHoCHV2:
 
                 ms = MarketStructure()
 
-                ms.detect(df)
+                ms.detect(
+                    df
+                )
 
                 market_structure = ms
 
@@ -1675,14 +1735,15 @@ class CHoCHV2:
 
                 print(
                     "CHoCH V2.5: "
-                    f"Market Structure Error: {error}"
+                    "Market Structure Error: "
+                    f"{error}"
                 )
 
                 market_structure = None
 
-        # --------------------------------------------------
-        # Auto-load Liquidity
-        # --------------------------------------------------
+        # ==================================================
+        # AUTO LIQUIDITY
+        # ==================================================
 
         if liquidity_sweeps is None:
 
@@ -1694,22 +1755,23 @@ class CHoCHV2:
 
                 ls = LiquiditySweepV2()
 
-                liquidity_sweeps = ls.detect(
-                    df
+                liquidity_sweeps = (
+                    ls.detect(df)
                 )
 
             except Exception as error:
 
                 print(
                     "CHoCH V2.5: "
-                    f"Liquidity Error: {error}"
+                    "Liquidity Error: "
+                    f"{error}"
                 )
 
                 liquidity_sweeps = []
 
-        # --------------------------------------------------
-        # Evaluate
-        # --------------------------------------------------
+        # ==================================================
+        # EVALUATE
+        # ==================================================
 
         result = self._evaluate(
             df,
@@ -1718,7 +1780,7 @@ class CHoCHV2:
         )
 
         # ==================================================
-        # Debug Output
+        # DEBUG
         # ==================================================
 
         print(
@@ -1756,7 +1818,7 @@ class CHoCHV2:
         )
 
         print(
-            "Age       :",
+            "Liquidity Age :",
             result["liquidity_age"]
         )
 
@@ -1796,17 +1858,17 @@ class CHoCHV2:
         )
 
         print(
-            "CHoCH     :",
+            "CHoCH Index :",
             result["choch_index"]
         )
 
         print(
-            "Level     :",
+            "Reversal Level :",
             result["reversal_level"]
         )
 
         print(
-            "Reasons   :",
+            "Reasons :",
             result["reasons"]
         )
 
@@ -1817,18 +1879,7 @@ class CHoCHV2:
         return result
 
     # ======================================================
-    # Compatibility Output
-    #
-    # ConfluenceEngine expects:
-    #
-    # [
-    #   {
-    #       "type": "Bullish CHoCH",
-    #       "price": ...,
-    #       "index": ...,
-    #       "time": ...
-    #   }
-    # ]
+    # CONFLUENCE COMPATIBILITY
     # ======================================================
 
     def detect_for_confluence(
@@ -1847,7 +1898,10 @@ class CHoCHV2:
                 liquidity_sweeps
             )
 
-        if not choch_result:
+        if not isinstance(
+            choch_result,
+            dict
+        ):
 
             return []
 
@@ -1876,6 +1930,22 @@ class CHoCHV2:
             )
         )
 
+        if direction == "BUY":
+
+            event_type = (
+                "Bullish CHoCH"
+            )
+
+        elif direction == "SELL":
+
+            event_type = (
+                "Bearish CHoCH"
+            )
+
+        else:
+
+            return []
+
         # --------------------------------------------------
         # Safety fallback
         # --------------------------------------------------
@@ -1884,25 +1954,13 @@ class CHoCHV2:
 
             choch_index = len(df) - 1
 
-        # --------------------------------------------------
-        # Direction
-        # --------------------------------------------------
-
-        if direction == "BUY":
-
-            event_type = "Bullish CHoCH"
-
-        elif direction == "SELL":
-
-            event_type = "Bearish CHoCH"
-
-        else:
+        if (
+            choch_index < 0
+            or
+            choch_index >= len(df)
+        ):
 
             return []
-
-        # --------------------------------------------------
-        # Candle information
-        # --------------------------------------------------
 
         candle = df.iloc[
             choch_index
@@ -1912,37 +1970,47 @@ class CHoCHV2:
 
             {
 
-                "type": event_type,
+                "type":
+                    event_type,
 
-                "price": float(
-                    candle["Close"]
-                ),
+                "price":
+                    float(
+                        candle["Close"]
+                    ),
 
-                "index": int(
-                    choch_index
-                ),
+                "index":
+                    int(
+                        choch_index
+                    ),
 
-                "time": candle.name,
+                "time":
+                    candle.name,
 
-                "level": (
-                    float(reversal_level)
-                    if reversal_level is not None
-                    else None
-                ),
+                "level":
+                    (
+                        float(
+                            reversal_level
+                        )
+                        if
+                        reversal_level
+                        is not None
+                        else None
+                    ),
 
-                "strength": int(
-                    choch_result.get(
-                        "strength",
-                        0
+                "strength":
+                    int(
+                        choch_result.get(
+                            "strength",
+                            0
+                        )
                     )
-                )
 
             }
 
         ]
 
     # ======================================================
-    # Engine Information
+    # ENGINE INFORMATION
     # ======================================================
 
     @staticmethod
@@ -1957,7 +2025,15 @@ class CHoCHV2:
                 "V2.5",
 
             "status":
-                "Development",
+                "Production",
+
+            "logic":
+                (
+                    "Active Liquidity + "
+                    "Protected Structure + "
+                    "Body Close + "
+                    "Displacement"
+                ),
 
             "developer":
                 "Liquidity Hunter AI"
@@ -1965,7 +2041,7 @@ class CHoCHV2:
         }
 
     # ======================================================
-    # Self Test
+    # SELF TEST
     # ======================================================
 
     def self_test(self):
@@ -1989,6 +2065,11 @@ class CHoCHV2:
         print(
             "Status  :",
             info["status"]
+        )
+
+        print(
+            "Logic   :",
+            info["logic"]
         )
 
         print(
