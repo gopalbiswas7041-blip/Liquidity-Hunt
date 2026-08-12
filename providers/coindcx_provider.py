@@ -1,7 +1,7 @@
 """
 ============================================================
 Liquidity Hunter AI
-CoinDCX Provider V20.7
+CoinDCX Provider V20.8
 ============================================================
 
 Responsibilities
@@ -13,6 +13,7 @@ Responsibilities
 • CoinDCX runtime-compatible intervals
 • Derived timeframe aggregation
 • Multi-request historical pagination
+• Robust pagination range protection
 • DataFrame normalization
 • Symbol normalization
 • Provider capabilities
@@ -100,16 +101,17 @@ class CoinDCXProvider(BaseProvider):
 
     REQUEST_DELAY = 0.10
 
+    # ------------------------------------------------------
+    # Maximum pagination requests.
+    #
+    # Safety protection against an API repeatedly returning
+    # the same historical range.
+    # ------------------------------------------------------
+
+    MAX_PAGINATION_REQUESTS = 20
+
     # ======================================================
     # ACTUAL COINDCX RUNTIME SOURCE TIMEFRAMES
-    # ======================================================
-    #
-    # Runtime response:
-    #
-    # interval must be one of
-    # [1m, 15m, 1h, 1d]
-    #
-    # These are therefore our safe source intervals.
     # ======================================================
 
     SOURCE_TIMEFRAMES = {
@@ -276,7 +278,7 @@ class CoinDCXProvider(BaseProvider):
         self.websocket = None
 
         print(
-            "CoinDCX Provider V20.7 Initialized"
+            "CoinDCX Provider V20.8 Initialized"
         )
 
         print(
@@ -341,27 +343,16 @@ class CoinDCXProvider(BaseProvider):
         aliases = {
 
             "1M": "1m",
-
             "3M": "3m",
-
             "5M": "5m",
-
             "15M": "15m",
-
             "30M": "30m",
-
             "1H": "1h",
-
             "2H": "2h",
-
             "4H": "4h",
-
             "6H": "6h",
-
             "8H": "8h",
-
             "12H": "12h",
-
             "1D": "1d",
 
         }
@@ -604,10 +595,6 @@ class CoinDCXProvider(BaseProvider):
             response.status_code
         )
 
-        # --------------------------------------------------
-        # Important API diagnostics
-        # --------------------------------------------------
-
         if response.status_code != 200:
 
             print(
@@ -756,7 +743,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # --------------------------------------------------
-        # Sort
+        # Sort ascending
         # --------------------------------------------------
 
         df.sort_values(
@@ -885,11 +872,29 @@ class CoinDCXProvider(BaseProvider):
 
         remaining = required_count
 
+        # --------------------------------------------------
+        # None = latest available candles.
+        #
+        # After first request this becomes:
+        #
+        # oldest_received_timestamp - 1ms
+        # --------------------------------------------------
+
         end_time = None
 
         total_received = 0
 
         request_number = 0
+
+        # --------------------------------------------------
+        # Global set of timestamps.
+        #
+        # This is stronger than DataFrame duplicate removal
+        # because it allows us to detect an API returning the
+        # exact same chunk before merging everything.
+        # --------------------------------------------------
+
+        collected_timestamps = set()
 
         # ==================================================
         # PAGINATION LOOP
@@ -898,6 +903,33 @@ class CoinDCXProvider(BaseProvider):
         while remaining > 0:
 
             request_number += 1
+
+            # --------------------------------------------------
+            # Safety protection
+            # --------------------------------------------------
+
+            if (
+                request_number
+                > self.MAX_PAGINATION_REQUESTS
+            ):
+
+                print(
+                    "\n⚠️ MAX PAGINATION REQUEST LIMIT REACHED"
+                )
+
+                print(
+                    "Requests :",
+                    request_number - 1
+                )
+
+                print(
+                    "Collected:",
+                    len(
+                        collected_timestamps
+                    )
+                )
+
+                break
 
             request_limit = min(
                 remaining,
@@ -929,8 +961,17 @@ class CoinDCXProvider(BaseProvider):
             )
 
             print(
+                "Current End Time :",
+                end_time
+            )
+
+            print(
                 "=========================================="
             )
+
+            # ==================================================
+            # REQUEST
+            # ==================================================
 
             candles = (
                 self._request_candles(
@@ -949,6 +990,10 @@ class CoinDCXProvider(BaseProvider):
 
                 break
 
+            # ==================================================
+            # CONVERT CHUNK
+            # ==================================================
+
             chunk = (
                 self._candles_to_dataframe(
                     candles
@@ -963,12 +1008,138 @@ class CoinDCXProvider(BaseProvider):
 
                 break
 
+            # ==================================================
+            # CHUNK RANGE DEBUG
+            # ==================================================
+
+            chunk_first = (
+                chunk.index.min()
+            )
+
+            chunk_last = (
+                chunk.index.max()
+            )
+
+            print(
+                "\n---------- CHUNK RANGE ----------"
+            )
+
+            print(
+                "Chunk #     :",
+                request_number
+            )
+
+            print(
+                "Rows        :",
+                len(chunk)
+            )
+
+            print(
+                "Oldest      :",
+                chunk_first
+            )
+
+            print(
+                "Newest      :",
+                chunk_last
+            )
+
+            print(
+                "=================================\n"
+            )
+
+            # ==================================================
+            # CHECK FOR DUPLICATE CHUNK
+            # ==================================================
+            #
+            # If ALL timestamps already exist, the API has
+            # returned a previously received historical range.
+            #
+            # We stop immediately instead of repeatedly adding
+            # the same 1000 candles.
+            # ==================================================
+
+            chunk_timestamps = set(
+                chunk.index
+            )
+
+            new_timestamps = (
+                chunk_timestamps
+                - collected_timestamps
+            )
+
+            if not new_timestamps:
+
+                print(
+                    "\n⚠️ DUPLICATE HISTORICAL CHUNK"
+                )
+
+                print(
+                    "CoinDCX returned a range "
+                    "already collected."
+                )
+
+                print(
+                    "Chunk # :",
+                    request_number
+                )
+
+                print(
+                    "Range   :",
+                    chunk_first,
+                    "->",
+                    chunk_last
+                )
+
+                print(
+                    "Pagination stopped safely."
+                )
+
+                break
+
+            # ==================================================
+            # FILTER ONLY NEW CANDLES
+            # ==================================================
+
+            new_chunk = (
+                chunk[
+                    chunk.index.isin(
+                        new_timestamps
+                    )
+                ]
+                .copy()
+            )
+
+            # --------------------------------------------------
+            # Extra safety
+            # --------------------------------------------------
+
+            if new_chunk.empty:
+
+                print(
+                    "No new candles found."
+                )
+
+                break
+
+            # ==================================================
+            # STORE
+            # ==================================================
+
             chunks.append(
-                chunk
+                new_chunk
+            )
+
+            # --------------------------------------------------
+            # Update global timestamp registry
+            # --------------------------------------------------
+
+            collected_timestamps.update(
+                new_timestamps
             )
 
             received = len(
-                chunk
+                new_chunk
             )
 
             total_received += (
@@ -980,17 +1151,17 @@ class CoinDCXProvider(BaseProvider):
             )
 
             print(
-                "Chunk Received :",
+                "New Candles      :",
                 received
             )
 
             print(
-                "Total Received  :",
+                "Total Unique     :",
                 total_received
             )
 
             print(
-                "Remaining       :",
+                "Remaining        :",
                 max(
                     0,
                     remaining
@@ -998,41 +1169,106 @@ class CoinDCXProvider(BaseProvider):
             )
 
             # ==================================================
-            # PAGINATION
+            # PAGINATION CURSOR
             # ==================================================
             #
-            # CoinDCX returns candle data ordered by time.
+            # IMPORTANT:
             #
-            # We move end_time backwards from the oldest
-            # candle received.
+            # We MUST move backwards using the oldest NEW
+            # candle, not the newest candle.
+            #
+            # Example:
+            #
+            # Chunk #1:
+            # 10:00 -> 02:00
+            #
+            # Next request:
+            # endTime = 01:59:59.999
+            #
+            # This prevents overlap with Chunk #1.
             # ==================================================
 
             oldest_timestamp = (
-                chunk.index.min()
+                new_chunk.index.min()
             )
 
-            end_time = int(
+            oldest_ms = int(
                 oldest_timestamp.timestamp()
                 * 1000
-            ) - 1
+            )
+
+            next_end_time = (
+                oldest_ms - 1
+            )
 
             # --------------------------------------------------
-            # If API returned fewer than requested, there may
-            # be no more historical data.
+            # Cursor protection
             # --------------------------------------------------
 
-            if received < request_limit:
+            if (
+                end_time is not None
+                and next_end_time >= end_time
+            ):
 
                 print(
-                    "API returned fewer candles "
-                    "than requested."
+                    "\n⚠️ PAGINATION CURSOR DID NOT MOVE"
+                )
+
+                print(
+                    "Previous End :",
+                    end_time
+                )
+
+                print(
+                    "Next End     :",
+                    next_end_time
+                )
+
+                print(
+                    "Pagination stopped safely."
                 )
 
                 break
 
             # --------------------------------------------------
-            # Prevent API hammering.
+            # Set next cursor
             # --------------------------------------------------
+
+            end_time = (
+                next_end_time
+            )
+
+            print(
+                "\nNext Historical End Time :",
+                end_time
+            )
+
+            print(
+                "Next request will search "
+                "OLDER candles."
+            )
+
+            # ==================================================
+            # API returned fewer candles
+            # ==================================================
+
+            if received < request_limit:
+
+                print(
+                    "\nAPI returned fewer NEW candles "
+                    "than requested."
+                )
+
+                print(
+                    "This may indicate the available "
+                    "historical range has been exhausted."
+                )
+
+                break
+
+            # ==================================================
+            # DELAY
+            # ==================================================
 
             if remaining > 0:
 
@@ -1041,15 +1277,19 @@ class CoinDCXProvider(BaseProvider):
                 )
 
         # ==================================================
-        # No chunks
+        # NO CHUNKS
         # ==================================================
 
         if not chunks:
 
+            print(
+                "\n⚠️ No historical chunks collected."
+            )
+
             return pd.DataFrame()
 
         # ==================================================
-        # Merge chunks
+        # MERGE
         # ==================================================
 
         df = pd.concat(
@@ -1057,7 +1297,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Sort
+        # SORT
         # ==================================================
 
         df = (
@@ -1065,7 +1305,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Duplicate protection
+        # DUPLICATE PROTECTION
         # ==================================================
 
         df = (
@@ -1076,30 +1316,98 @@ class CoinDCXProvider(BaseProvider):
             ]
         )
 
-        print(
-            "\n========== SOURCE DATA =========="
+        # ==================================================
+        # FINAL UNIQUE COUNT
+        # ==================================================
+
+        unique_count = len(
+            df
         )
 
         print(
-            "Source TF :",
+            "\n=========================================="
+        )
+
+        print(
+            "SOURCE COLLECTION COMPLETE"
+        )
+
+        print(
+            "Source TF        :",
             source_timeframe
         )
 
         print(
-            "Rows      :",
-            len(df)
+            "Required         :",
+            required_count
+        )
+
+        print(
+            "Unique Collected :",
+            unique_count
+        )
+
+        print(
+            "Shortfall        :",
+            max(
+                0,
+                required_count
+                - unique_count
+            )
         )
 
         if not df.empty:
 
             print(
-                "First     :",
+                "First            :",
                 df.index[0]
             )
 
             print(
-                "Last      :",
+                "Last             :",
                 df.index[-1]
+            )
+
+        print(
+            "=========================================="
+        )
+
+        # ==================================================
+        # IMPORTANT VALIDATION
+        # ==================================================
+
+        if (
+            unique_count
+            < required_count
+        ):
+
+            print(
+                "\n⚠️ WARNING:"
+            )
+
+            print(
+                "Requested source candles were not "
+                "fully collected."
+            )
+
+            print(
+                "This is NOT an aggregation error."
+            )
+
+            print(
+                "Available unique source candles :",
+                unique_count
+            )
+
+            print(
+                "Required source candles          :",
+                required_count
+            )
+
+        else:
+
+            print(
+                "\n✅ REQUIRED SOURCE CANDLE COUNT REACHED"
             )
 
         print(
@@ -1160,19 +1468,24 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Source candle requirement
+        # SOURCE CANDLE REQUIREMENT
         # ==================================================
-        #
-        # We request a small safety margin.
         #
         # Example:
         #
         # 1000 × 5m
-        # requires approximately
-        # 5000 × 1m
         #
-        # We request extra source candles so that boundary
-        # alignment does not leave us short.
+        # requires:
+        #
+        # 1000 × 5 = 5000 × 1m
+        #
+        # Safety margin:
+        #
+        # multiplier × 2 = 10
+        #
+        # Total:
+        #
+        # 5010 × 1m
         # ==================================================
 
         safety_margin = (
@@ -1222,7 +1535,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Download source candles
+        # DOWNLOAD SOURCE CANDLES
         # ==================================================
 
         source_df = (
@@ -1235,10 +1548,57 @@ class CoinDCXProvider(BaseProvider):
 
         if source_df.empty:
 
+            print(
+                "No source candles available."
+            )
+
             return pd.DataFrame()
 
         # ==================================================
-        # Aggregate
+        # SOURCE COUNT DEBUG
+        # ==================================================
+
+        print(
+            "\n=========================================="
+        )
+
+        print(
+            "DERIVED SOURCE VALIDATION"
+        )
+
+        print(
+            "Source TF      :",
+            source_timeframe
+        )
+
+        print(
+            "Required       :",
+            source_required
+        )
+
+        print(
+            "Received       :",
+            len(source_df)
+        )
+
+        if len(source_df) >= source_required:
+
+            print(
+                "Status         : ✅ READY"
+            )
+
+        else:
+
+            print(
+                "Status         : ⚠️ SHORT SOURCE DATA"
+            )
+
+        print(
+            "=========================================="
+        )
+
+        # ==================================================
+        # AGGREGATE
         # ==================================================
 
         result = (
@@ -1253,7 +1613,7 @@ class CoinDCXProvider(BaseProvider):
             return result
 
         # ==================================================
-        # Final duplicate protection
+        # FINAL DUPLICATE PROTECTION
         # ==================================================
 
         result = (
@@ -1265,7 +1625,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Sort
+        # SORT
         # ==================================================
 
         result = (
@@ -1273,7 +1633,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Final 1000 candle limit
+        # FINAL 1000 CANDLE LIMIT
         # ==================================================
 
         if len(result) > limit:
@@ -1281,6 +1641,10 @@ class CoinDCXProvider(BaseProvider):
             result = result.iloc[
                 -limit:
             ].copy()
+
+        # ==================================================
+        # DERIVED RESULT
+        # ==================================================
 
         print(
             "\n========== DERIVED RESULT =========="
@@ -1326,7 +1690,7 @@ class CoinDCXProvider(BaseProvider):
     ):
 
         # ==================================================
-        # Normalize
+        # NORMALIZE
         # ==================================================
 
         original_timeframe = (
@@ -1355,7 +1719,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         print(
-            "CoinDCX Historical Candles V20.7"
+            "CoinDCX Historical Candles V20.8"
         )
 
         print(
@@ -1378,7 +1742,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Native Source Timeframe
+        # NATIVE SOURCE TIMEFRAME
         # ==================================================
 
         if (
@@ -1395,7 +1759,7 @@ class CoinDCXProvider(BaseProvider):
             )
 
         # ==================================================
-        # Derived Timeframe
+        # DERIVED TIMEFRAME
         # ==================================================
 
         else:
@@ -1409,7 +1773,7 @@ class CoinDCXProvider(BaseProvider):
             )
 
         # ==================================================
-        # Empty
+        # EMPTY
         # ==================================================
 
         if df is None:
@@ -1429,7 +1793,7 @@ class CoinDCXProvider(BaseProvider):
             return df
 
         # ==================================================
-        # Final normalization
+        # FINAL NORMALIZATION
         # ==================================================
 
         df = (
@@ -1445,7 +1809,7 @@ class CoinDCXProvider(BaseProvider):
         )
 
         # ==================================================
-        # Final 1000 safety limit
+        # FINAL 1000 SAFETY LIMIT
         # ==================================================
 
         if len(df) > limit:
@@ -1455,7 +1819,7 @@ class CoinDCXProvider(BaseProvider):
             ].copy()
 
         # ==================================================
-        # Final result
+        # FINAL RESULT
         # ==================================================
 
         print(
@@ -1640,7 +2004,7 @@ class CoinDCXProvider(BaseProvider):
                 "CoinDCX Provider",
 
             "version":
-                "V20.7",
+                "V20.8",
 
             "exchange":
                 "CoinDCX",
