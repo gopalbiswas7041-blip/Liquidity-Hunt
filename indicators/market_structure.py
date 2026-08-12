@@ -10,6 +10,7 @@ from typing import List
 
 @dataclass(slots=True)
 class SwingPoint:
+
     index: int
     price: float
     kind: str          # HIGH / LOW
@@ -22,6 +23,7 @@ class SwingPoint:
 
 @dataclass(slots=True)
 class StructureEvent:
+
     index: int
     event: str         # BOS / CHOCH
     direction: str     # BUY / SELL
@@ -38,6 +40,7 @@ class StructureEvent:
 
 @dataclass(slots=True)
 class TrendState:
+
     trend: str = "NONE"
     strength: str = "WEAK"
 
@@ -52,15 +55,52 @@ class TrendState:
 
 
 # ==========================================================
-# Market Structure Engine V20.2
-# Body-Close BOS Engine
+# Market Structure Engine V20.3
+#
+# V20.3 UPDATE
+#
+# Major change:
+#
+# Trend is NO LONGER calculated from the complete historical
+# HH / HL / LH / LL count.
+#
+# Trend now uses the MOST RECENT CONFIRMED STRUCTURES.
+#
+# Default:
+#
+#     Recent structure lookback = 12
+#
+# These are structure points, NOT candles.
+#
+# Example:
+#
+#     HH
+#     HL
+#     HH
+#     HL
+#     LH
+#     LL
+#     ...
+#
+# Only the latest 12 labelled structure points are used for
+# the current trend decision.
+#
+# This prevents old historical structure from dominating
+# the current 15m HTF trend.
 # ==========================================================
+
 
 class MarketStructure:
 
+    # ======================================================
+    # INITIALIZATION
+    # ======================================================
+
     def __init__(self):
 
-        print("Market Structure Engine V20.2 Initialized")
+        print(
+            "Market Structure Engine V20.3 Initialized"
+        )
 
         # --------------------------------------------------
         # Swing Settings
@@ -69,11 +109,26 @@ class MarketStructure:
         self.left_strength = 2
         self.right_strength = 2
 
+        # --------------------------------------------------
+        # Trend Settings
+        #
+        # IMPORTANT:
+        #
+        # This is the number of RECENT CONFIRMED STRUCTURE
+        # POINTS used for trend detection.
+        #
+        # It is NOT the number of candles.
+        # --------------------------------------------------
+
+        self.trend_structure_lookback = 12
+
+        # --------------------------------------------------
         # Minimum price distance between consecutive
         # same-type swing points.
         #
         # 0 = disabled
-        #
+        # --------------------------------------------------
+
         self.minimum_distance = 0.0
 
         # --------------------------------------------------
@@ -81,6 +136,7 @@ class MarketStructure:
         # --------------------------------------------------
 
         self.swing_highs: List[SwingPoint] = []
+
         self.swing_lows: List[SwingPoint] = []
 
         self.structure_events: List[StructureEvent] = []
@@ -100,6 +156,7 @@ class MarketStructure:
     def reset(self):
 
         self.swing_highs.clear()
+
         self.swing_lows.clear()
 
         self.structure_events.clear()
@@ -117,9 +174,11 @@ class MarketStructure:
     def validate(self, data):
 
         if data is None:
+
             return False
 
         if len(data) < 10:
+
             return False
 
         required = [
@@ -132,6 +191,7 @@ class MarketStructure:
         for col in required:
 
             if col not in data.columns:
+
                 return False
 
         return True
@@ -147,6 +207,7 @@ class MarketStructure:
     ):
 
         left = self.left_strength
+
         right = self.right_strength
 
         price = highs[index]
@@ -155,18 +216,26 @@ class MarketStructure:
         # Left side
         # --------------------------------------------------
 
-        for i in range(index - left, index):
+        for i in range(
+            index - left,
+            index
+        ):
 
             if highs[i] >= price:
+
                 return False
 
         # --------------------------------------------------
         # Right side
         # --------------------------------------------------
 
-        for i in range(index + 1, index + right + 1):
+        for i in range(
+            index + 1,
+            index + right + 1
+        ):
 
             if highs[i] > price:
+
                 return False
 
         return True
@@ -182,6 +251,7 @@ class MarketStructure:
     ):
 
         left = self.left_strength
+
         right = self.right_strength
 
         price = lows[index]
@@ -190,18 +260,26 @@ class MarketStructure:
         # Left side
         # --------------------------------------------------
 
-        for i in range(index - left, index):
+        for i in range(
+            index - left,
+            index
+        ):
 
             if lows[i] <= price:
+
                 return False
 
         # --------------------------------------------------
         # Right side
         # --------------------------------------------------
 
-        for i in range(index + 1, index + right + 1):
+        for i in range(
+            index + 1,
+            index + right + 1
+        ):
 
             if lows[i] < price:
+
                 return False
 
         return True
@@ -220,7 +298,10 @@ class MarketStructure:
             new_price - previous_price
         )
 
-        return distance >= self.minimum_distance
+        return (
+            distance >=
+            self.minimum_distance
+        )
 
     # ======================================================
     # Detect Swings
@@ -229,9 +310,11 @@ class MarketStructure:
     def detect_swings(self, data):
 
         highs = data["High"].values
+
         lows = data["Low"].values
 
         left = self.left_strength
+
         right = self.right_strength
 
         for i in range(
@@ -239,13 +322,18 @@ class MarketStructure:
             len(data) - right
         ):
 
-            # ------------------------------------------------
+            # ==================================================
             # Swing High
-            # ------------------------------------------------
+            # ==================================================
 
-            if self.is_swing_high(highs, i):
+            if self.is_swing_high(
+                highs,
+                i
+            ):
 
-                price = float(highs[i])
+                price = float(
+                    highs[i]
+                )
 
                 if self.swing_highs:
 
@@ -257,6 +345,7 @@ class MarketStructure:
                         price,
                         previous_price
                     ):
+
                         continue
 
                 self.swing_highs.append(
@@ -269,13 +358,18 @@ class MarketStructure:
 
                 )
 
-            # ------------------------------------------------
+            # ==================================================
             # Swing Low
-            # ------------------------------------------------
+            # ==================================================
 
-            if self.is_swing_low(lows, i):
+            if self.is_swing_low(
+                lows,
+                i
+            ):
 
-                price = float(lows[i])
+                price = float(
+                    lows[i]
+                )
 
                 if self.swing_lows:
 
@@ -287,6 +381,7 @@ class MarketStructure:
                         price,
                         previous_price
                     ):
+
                         continue
 
                 self.swing_lows.append(
@@ -440,12 +535,16 @@ class MarketStructure:
         # --------------------------------------------------
 
         points.sort(
-            key=lambda item: item[0]
+            key=lambda item:
+                item[0]
         )
 
         self.structure_sequence = [
+
             label
+
             for _, label in points
+
         ]
 
         # --------------------------------------------------
@@ -464,32 +563,55 @@ class MarketStructure:
 
     # ======================================================
     # Update Trend Counters
+    #
+    # IMPORTANT:
+    #
+    # These counters still represent the COMPLETE detected
+    # dataset for compatibility/debugging.
+    #
+    # Trend itself does NOT use these complete counts anymore.
     # ======================================================
 
     def update_trend_state(self):
 
         self.trend_state.hh = sum(
+
             1
+
             for s in self.swing_highs
+
             if s.label == "HH"
+
         )
 
         self.trend_state.hl = sum(
+
             1
+
             for s in self.swing_lows
+
             if s.label == "HL"
+
         )
 
         self.trend_state.lh = sum(
+
             1
+
             for s in self.swing_highs
+
             if s.label == "LH"
+
         )
 
         self.trend_state.ll = sum(
+
             1
+
             for s in self.swing_lows
+
             if s.label == "LL"
+
         )
 
         # --------------------------------------------------
@@ -497,9 +619,13 @@ class MarketStructure:
         # --------------------------------------------------
 
         labelled_highs = [
+
             s.label
+
             for s in self.swing_highs
+
             if s.label
+
         ]
 
         if labelled_highs:
@@ -517,9 +643,13 @@ class MarketStructure:
         # --------------------------------------------------
 
         labelled_lows = [
+
             s.label
+
             for s in self.swing_lows
+
             if s.label
+
         ]
 
         if labelled_lows:
@@ -586,84 +716,411 @@ class MarketStructure:
         )
 
     # ======================================================
-    # Detect Trend
+    # Get Recent Structures
     #
-    # V20.2 keeps the V20.1 trend calculation for
-    # compatibility.
+    # Returns only the latest confirmed labelled structure
+    # points used by the Trend Engine.
+    # ======================================================
+
+    def get_recent_structures(self):
+
+        recent = []
+
+        # --------------------------------------------------
+        # High structures
+        # --------------------------------------------------
+
+        for swing in self.swing_highs:
+
+            if swing.label:
+
+                recent.append(
+
+                    {
+                        "index":
+                            swing.index,
+
+                        "price":
+                            swing.price,
+
+                        "kind":
+                            swing.kind,
+
+                        "label":
+                            swing.label
+                    }
+
+                )
+
+        # --------------------------------------------------
+        # Low structures
+        # --------------------------------------------------
+
+        for swing in self.swing_lows:
+
+            if swing.label:
+
+                recent.append(
+
+                    {
+                        "index":
+                            swing.index,
+
+                        "price":
+                            swing.price,
+
+                        "kind":
+                            swing.kind,
+
+                        "label":
+                            swing.label
+                    }
+
+                )
+
+        # --------------------------------------------------
+        # Chronological order
+        # --------------------------------------------------
+
+        recent.sort(
+            key=lambda item:
+                item["index"]
+        )
+
+        # --------------------------------------------------
+        # Keep latest N structures
+        # --------------------------------------------------
+
+        return recent[
+            -self.trend_structure_lookback:
+        ]
+
+    # ======================================================
+    # Detect Trend V20.3
     #
-    # Dedicated structure-state trend logic will be
-    # upgraded in V20.3.
+    # NEW TREND LOGIC
+    #
+    # Only recent confirmed structures are considered.
+    #
+    # Bullish evidence:
+    #
+    #     HH
+    #     HL
+    #
+    # Bearish evidence:
+    #
+    #     LH
+    #     LL
+    #
+    # Recent structures receive more importance.
     # ======================================================
 
     def detect_trend(self):
 
-        hh = self.trend_state.hh
-        hl = self.trend_state.hl
-        lh = self.trend_state.lh
-        ll = self.trend_state.ll
-
-        total_structure = (
-            hh + hl + lh + ll
+        recent_structures = (
+            self.get_recent_structures()
         )
 
         # --------------------------------------------------
-        # No structure
+        # No recent structure
         # --------------------------------------------------
 
-        if total_structure == 0:
+        if not recent_structures:
 
             self.trend_state.trend = "NONE"
 
             self.trend_state.strength = "WEAK"
 
+            print(
+                "\n========== TREND =========="
+            )
+
+            print(
+                "Trend    : NONE"
+            )
+
+            print(
+                "Strength : WEAK"
+            )
+
+            print(
+                "Recent Structures : 0"
+            )
+
+            print(
+                "===========================\n"
+            )
+
             return
 
         # --------------------------------------------------
-        # Bullish
+        # Recent structure counts
         # --------------------------------------------------
 
-        if hh > lh and hl > ll:
+        recent_hh = sum(
 
-            self.trend_state.trend = "BULLISH"
+            1
+
+            for item in recent_structures
+
+            if item["label"] == "HH"
+
+        )
+
+        recent_hl = sum(
+
+            1
+
+            for item in recent_structures
+
+            if item["label"] == "HL"
+
+        )
+
+        recent_lh = sum(
+
+            1
+
+            for item in recent_structures
+
+            if item["label"] == "LH"
+
+        )
+
+        recent_ll = sum(
+
+            1
+
+            for item in recent_structures
+
+            if item["label"] == "LL"
+
+        )
 
         # --------------------------------------------------
-        # Bearish
+        # Weighted score
+        #
+        # Older recent structures get lower weight.
+        #
+        # Latest structure gets highest weight.
+        #
+        # Example with 12 structures:
+        #
+        # Oldest -> weight 1
+        # ...
+        # Latest -> weight 12
         # --------------------------------------------------
 
-        elif ll > hl and lh > hh:
+        bullish_score = 0
 
-            self.trend_state.trend = "BEARISH"
+        bearish_score = 0
+
+        total_weight = len(
+            recent_structures
+        )
+
+        for position, structure in enumerate(
+            recent_structures,
+            start=1
+        ):
+
+            label = structure["label"]
+
+            weight = position
+
+            if label in (
+                "HH",
+                "HL"
+            ):
+
+                bullish_score += weight
+
+            elif label in (
+                "LH",
+                "LL"
+            ):
+
+                bearish_score += weight
 
         # --------------------------------------------------
-        # Mixed / Sideways
+        # Difference
         # --------------------------------------------------
+
+        score_difference = abs(
+
+            bullish_score -
+            bearish_score
+
+        )
+
+        # --------------------------------------------------
+        # Dominance ratio
+        #
+        # This tells us how strongly one side dominates.
+        # --------------------------------------------------
+
+        total_score = (
+
+            bullish_score +
+            bearish_score
+
+        )
+
+        if total_score > 0:
+
+            dominance = (
+                score_difference /
+                total_score
+            )
 
         else:
 
-            self.trend_state.trend = "SIDEWAYS"
+            dominance = 0.0
+
+        # --------------------------------------------------
+        # Latest structure
+        # --------------------------------------------------
+
+        latest_label = (
+            recent_structures[-1]["label"]
+        )
+
+        # --------------------------------------------------
+        # Trend Decision
+        #
+        # We require both:
+        #
+        # 1. Directional score dominance
+        # 2. Latest structure should not strongly oppose
+        #    the direction.
+        # --------------------------------------------------
+
+        if (
+
+            bullish_score >
+            bearish_score
+
+            and
+
+            latest_label in (
+                "HH",
+                "HL"
+            )
+
+        ):
+
+            self.trend_state.trend = (
+                "BULLISH"
+            )
+
+        elif (
+
+            bearish_score >
+            bullish_score
+
+            and
+
+            latest_label in (
+                "LH",
+                "LL"
+            )
+
+        ):
+
+            self.trend_state.trend = (
+                "BEARISH"
+            )
+
+        else:
+
+            self.trend_state.trend = (
+                "SIDEWAYS"
+            )
 
         # --------------------------------------------------
         # Strength
+        #
+        # Strong:
+        #     dominance >= 0.35
+        #
+        # Medium:
+        #     dominance >= 0.20
+        #
+        # Weak:
+        #     below 0.20
         # --------------------------------------------------
 
-        score = abs(
-            (hh + hl) - (lh + ll)
-        )
+        if dominance >= 0.35:
 
-        if score >= 6:
+            self.trend_state.strength = (
+                "STRONG"
+            )
 
-            self.trend_state.strength = "STRONG"
+        elif dominance >= 0.20:
 
-        elif score >= 3:
-
-            self.trend_state.strength = "MEDIUM"
+            self.trend_state.strength = (
+                "MEDIUM"
+            )
 
         else:
 
-            self.trend_state.strength = "WEAK"
+            self.trend_state.strength = (
+                "WEAK"
+            )
+
+        # --------------------------------------------------
+        # Debug
+        # --------------------------------------------------
 
         print(
-            "\n========== TREND =========="
+            "\n========== "
+            "TREND V20.3 "
+            "=========="
+        )
+
+        print(
+            f"Recent Structures Used : "
+            f"{len(recent_structures)}"
+        )
+
+        print(
+            f"Recent HH : "
+            f"{recent_hh}"
+        )
+
+        print(
+            f"Recent HL : "
+            f"{recent_hl}"
+        )
+
+        print(
+            f"Recent LH : "
+            f"{recent_lh}"
+        )
+
+        print(
+            f"Recent LL : "
+            f"{recent_ll}"
+        )
+
+        print(
+            f"Bullish Score : "
+            f"{bullish_score}"
+        )
+
+        print(
+            f"Bearish Score : "
+            f"{bearish_score}"
+        )
+
+        print(
+            f"Dominance : "
+            f"{dominance:.2f}"
+        )
+
+        print(
+            f"Latest Structure : "
+            f"{latest_label}"
         )
 
         print(
@@ -677,7 +1134,7 @@ class MarketStructure:
         )
 
         print(
-            "===========================\n"
+            "================================\n"
         )
 
     # ======================================================
@@ -708,15 +1165,11 @@ class MarketStructure:
 
         for swing in self.swing_highs:
 
-            level = float(swing.price)
+            level = float(
+                swing.price
+            )
 
             swing_index = swing.index
-
-            # ----------------------------------------------
-            # Start checking AFTER the swing candle.
-            #
-            # The swing itself cannot break itself.
-            # ----------------------------------------------
 
             start_index = (
                 swing_index + 1
@@ -762,10 +1215,7 @@ class MarketStructure:
                     )
 
                     # --------------------------------------
-                    # IMPORTANT:
-                    #
-                    # One structure level can generate
-                    # only ONE BOS.
+                    # One structure level = one BOS.
                     # --------------------------------------
 
                     break
@@ -778,7 +1228,9 @@ class MarketStructure:
 
         for swing in self.swing_lows:
 
-            level = float(swing.price)
+            level = float(
+                swing.price
+            )
 
             swing_index = swing.index
 
@@ -832,8 +1284,10 @@ class MarketStructure:
         # --------------------------------------------------
 
         self.structure_events = (
+
             bullish_events +
             bearish_events
+
         )
 
         # --------------------------------------------------
@@ -841,7 +1295,10 @@ class MarketStructure:
         # --------------------------------------------------
 
         self.structure_events.sort(
-            key=lambda event: event.index
+
+            key=lambda event:
+                event.index
+
         )
 
         # --------------------------------------------------
@@ -865,15 +1322,21 @@ class MarketStructure:
             for event in self.structure_events:
 
                 print(
+
                     f"{event.direction} BOS | "
+
                     f"Candle Index : "
                     f"{event.index} | "
+
                     f"Structure Index : "
                     f"{event.structure_index} | "
+
                     f"Level : "
                     f"{event.level} | "
+
                     f"Close : "
                     f"{event.close}"
+
                 )
 
         print(
@@ -899,14 +1362,17 @@ class MarketStructure:
                         else "Bearish BOS"
                     ),
 
-                    "price": event.level,
+                    "price":
+                        event.level,
 
-                    "index": event.index,
+                    "index":
+                        event.index,
 
-                    "time": None,
+                    "time":
+                        None,
 
-                    # V20.2 information
-                    "close": event.close,
+                    "close":
+                        event.close,
 
                     "structure_index":
                         event.structure_index
@@ -963,7 +1429,7 @@ class MarketStructure:
         self.update_trend_state()
 
         # --------------------------------------------------
-        # Trend
+        # Trend V20.3
         # --------------------------------------------------
 
         self.detect_trend()
@@ -1013,7 +1479,17 @@ class MarketStructure:
                 self.trend_state.latest_high_label,
 
             "latest_low_label":
-                self.trend_state.latest_low_label
+                self.trend_state.latest_low_label,
+
+            # --------------------------------------------------
+            # V20.3 information
+            # --------------------------------------------------
+
+            "trend_structure_lookback":
+                self.trend_structure_lookback,
+
+            "recent_structures":
+                self.get_recent_structures()
         }
 
     # ======================================================
@@ -1063,9 +1539,13 @@ class MarketStructure:
     def get_bos_events(self):
 
         return [
+
             event
+
             for event in self.structure_events
+
             if event.event == "BOS"
+
         ]
 
     # ======================================================
@@ -1073,6 +1553,10 @@ class MarketStructure:
     # ======================================================
 
     def debug_summary(self):
+
+        recent_structures = (
+            self.get_recent_structures()
+        )
 
         print(
             "\n========== "
@@ -1131,6 +1615,16 @@ class MarketStructure:
         )
 
         print(
+            f"Recent Structures Used: "
+            f"{len(recent_structures)}"
+        )
+
+        print(
+            f"Trend Lookback: "
+            f"{self.trend_structure_lookback}"
+        )
+
+        print(
             f"Swing Highs: "
             f"{len(self.swing_highs)}"
         )
@@ -1162,10 +1656,16 @@ class MarketStructure:
                 "Market Structure Engine",
 
             "version":
-                "V20.2",
+                "V20.3",
 
             "status":
                 "Production",
+
+            "trend_logic":
+                "Recent confirmed structure with weighted recency",
+
+            "trend_structure_lookback":
+                12,
 
             "developer":
                 "Liquidity Hunter AI"
@@ -1196,6 +1696,16 @@ class MarketStructure:
         print(
             f"Status  : "
             f"{info['status']}"
+        )
+
+        print(
+            f"Trend Logic : "
+            f"{info['trend_logic']}"
+        )
+
+        print(
+            f"Trend Lookback : "
+            f"{info['trend_structure_lookback']}"
         )
 
         print(
