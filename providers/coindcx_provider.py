@@ -16,9 +16,17 @@ Responsibilities
 • Robust pagination range protection
 • DataFrame normalization
 • Symbol normalization
+• Gold / Silver / BTC / ETH support
 • Provider capabilities
 • Duplicate protection
 • Safe API error reporting
+
+Supported Markets
+-----------------
+    B-BTC_USDT   -> Bitcoin
+    B-ETH_USDT   -> Ethereum
+    B-XAU_USDT   -> Gold
+    B-XAG_USDT   -> Silver
 
 IMPORTANT
 ---------
@@ -103,12 +111,53 @@ class CoinDCXProvider(BaseProvider):
 
     # ------------------------------------------------------
     # Maximum pagination requests.
-    #
-    # Safety protection against an API repeatedly returning
-    # the same historical range.
     # ------------------------------------------------------
 
     MAX_PAGINATION_REQUESTS = 20
+
+    # ======================================================
+    # SUPPORTED MARKET SYMBOLS
+    # ======================================================
+    #
+    # These are the canonical CoinDCX symbols used internally.
+    #
+    # IMPORTANT:
+    # BTC is NOT removed.
+    #
+    # GOLD / SILVER / ETH / BTC are all supported.
+    # ======================================================
+
+    SUPPORTED_SYMBOLS = [
+
+        "B-XAU_USDT",     # GOLD
+
+        "B-BTC_USDT",     # BITCOIN
+
+        "B-ETH_USDT",     # ETHEREUM
+
+        "B-XAG_USDT",     # SILVER
+
+    ]
+
+    # ======================================================
+    # MARKET NAMES
+    # ======================================================
+
+    MARKET_NAMES = {
+
+        "B-XAU_USDT":
+            "GOLD",
+
+        "B-BTC_USDT":
+            "BTC",
+
+        "B-ETH_USDT":
+            "ETH",
+
+        "B-XAG_USDT":
+            "SILVER",
+
+    }
 
     # ======================================================
     # ACTUAL COINDCX RUNTIME SOURCE TIMEFRAMES
@@ -282,6 +331,16 @@ class CoinDCXProvider(BaseProvider):
         )
 
         print(
+            "Supported Markets :",
+            self.SUPPORTED_SYMBOLS
+        )
+
+        print(
+            "Market Names      :",
+            self.MARKET_NAMES
+        )
+
+        print(
             "Supported API source TF :",
             list(
                 self.SOURCE_TIMEFRAMES.keys()
@@ -347,12 +406,14 @@ class CoinDCXProvider(BaseProvider):
             "5M": "5m",
             "15M": "15m",
             "30M": "30m",
+
             "1H": "1h",
             "2H": "2h",
             "4H": "4h",
             "6H": "6h",
             "8H": "8h",
             "12H": "12h",
+
             "1D": "1d",
 
         }
@@ -381,6 +442,15 @@ class CoinDCXProvider(BaseProvider):
         symbol: str
     ) -> str:
 
+        # --------------------------------------------------
+        # Empty symbol
+        #
+        # Keep BTC as provider-level fallback for backward
+        # compatibility.
+        #
+        # Controller V20.8 explicitly selects GOLD first.
+        # --------------------------------------------------
+
         if not symbol:
 
             return "B-BTC_USDT"
@@ -389,7 +459,15 @@ class CoinDCXProvider(BaseProvider):
             symbol
         ).strip().upper()
 
+        # ==================================================
+        # Canonical symbols
+        # ==================================================
+
         mapping = {
+
+            # ==================================================
+            # BITCOIN
+            # ==================================================
 
             "BTCUSDT":
                 "B-BTC_USDT",
@@ -400,6 +478,22 @@ class CoinDCXProvider(BaseProvider):
             "BTC-USDT":
                 "B-BTC_USDT",
 
+            "BTC":
+                "B-BTC_USDT",
+
+            "B-BTCUSDT":
+                "B-BTC_USDT",
+
+            "B-BTC/USDT":
+                "B-BTC_USDT",
+
+            "B-BTC-USDT":
+                "B-BTC_USDT",
+
+            # ==================================================
+            # ETHEREUM
+            # ==================================================
+
             "ETHUSDT":
                 "B-ETH_USDT",
 
@@ -409,12 +503,158 @@ class CoinDCXProvider(BaseProvider):
             "ETH-USDT":
                 "B-ETH_USDT",
 
+            "ETH":
+                "B-ETH_USDT",
+
+            "B-ETHUSDT":
+                "B-ETH_USDT",
+
+            "B-ETH/USDT":
+                "B-ETH_USDT",
+
+            "B-ETH-USDT":
+                "B-ETH_USDT",
+
+            # ==================================================
+            # GOLD
+            # ==================================================
+
+            "XAUUSDT":
+                "B-XAU_USDT",
+
+            "XAU/USDT":
+                "B-XAU_USDT",
+
+            "XAU-USDT":
+                "B-XAU_USDT",
+
+            "XAU":
+                "B-XAU_USDT",
+
+            "GOLD":
+                "B-XAU_USDT",
+
+            "GOLDUSDT":
+                "B-XAU_USDT",
+
+            "GOLD/USDT":
+                "B-XAU_USDT",
+
+            "GOLD-USDT":
+                "B-XAU_USDT",
+
+            "B-XAUUSDT":
+                "B-XAU_USDT",
+
+            "B-XAU/USDT":
+                "B-XAU_USDT",
+
+            "B-XAU-USDT":
+                "B-XAU_USDT",
+
+            # ==================================================
+            # SILVER
+            # ==================================================
+
+            "XAGUSDT":
+                "B-XAG_USDT",
+
+            "XAG/USDT":
+                "B-XAG_USDT",
+
+            "XAG-USDT":
+                "B-XAG_USDT",
+
+            "XAG":
+                "B-XAG_USDT",
+
+            "SILVER":
+                "B-XAG_USDT",
+
+            "SILVERUSDT":
+                "B-XAG_USDT",
+
+            "SILVER/USDT":
+                "B-XAG_USDT",
+
+            "SILVER-USDT":
+                "B-XAG_USDT",
+
+            "B-XAGUSDT":
+                "B-XAG_USDT",
+
+            "B-XAG/USDT":
+                "B-XAG_USDT",
+
+            "B-XAG-USDT":
+                "B-XAG_USDT",
+
         }
 
-        return mapping.get(
+        normalized = mapping.get(
             symbol,
             symbol
         )
+
+        # ==================================================
+        # Debug
+        # ==================================================
+
+        print(
+            "Symbol Normalize :",
+            symbol,
+            "->",
+            normalized
+        )
+
+        return normalized
+
+    # ======================================================
+    # MARKET NAME
+    # ======================================================
+
+    def get_market_name(
+        self,
+        symbol: str
+    ) -> str:
+
+        normalized = (
+            self.normalize_symbol(
+                symbol
+            )
+        )
+
+        return self.MARKET_NAMES.get(
+            normalized,
+            normalized
+        )
+
+    # ======================================================
+    # VALIDATE SYMBOL
+    # ======================================================
+
+    def validate_symbol(
+        self,
+        symbol: str
+    ) -> bool:
+
+        try:
+
+            normalized = (
+                self.normalize_symbol(
+                    symbol
+                )
+            )
+
+            return (
+                normalized
+                in
+                self.SUPPORTED_SYMBOLS
+            )
+
+        except Exception:
+
+            return False
 
     # ======================================================
     # LIVE PRICE
@@ -429,6 +669,15 @@ class CoinDCXProvider(BaseProvider):
             self.normalize_symbol(
                 symbol
             )
+        )
+
+        print(
+            "\nCoinDCX Live Price Request"
+        )
+
+        print(
+            "Symbol :",
+            symbol
         )
 
         response = requests.get(
@@ -508,6 +757,21 @@ class CoinDCXProvider(BaseProvider):
                 f"{interval}"
             )
 
+        # --------------------------------------------------
+        # Validate market
+        # --------------------------------------------------
+
+        if not self.validate_symbol(
+            symbol
+        ):
+
+            print(
+                "WARNING:"
+                " Symbol is not in provider"
+                " supported symbol registry:",
+                symbol
+            )
+
         url = (
             f"{self.BASE_URL}"
             f"{self.CANDLE_ENDPOINT}"
@@ -549,6 +813,13 @@ class CoinDCXProvider(BaseProvider):
         print(
             "Pair     :",
             symbol
+        )
+
+        print(
+            "Market   :",
+            self.get_market_name(
+                symbol
+            )
         )
 
         print(
@@ -874,10 +1145,6 @@ class CoinDCXProvider(BaseProvider):
 
         # --------------------------------------------------
         # None = latest available candles.
-        #
-        # After first request this becomes:
-        #
-        # oldest_received_timestamp - 1ms
         # --------------------------------------------------
 
         end_time = None
@@ -888,10 +1155,6 @@ class CoinDCXProvider(BaseProvider):
 
         # --------------------------------------------------
         # Global set of timestamps.
-        #
-        # This is stronger than DataFrame duplicate removal
-        # because it allows us to detect an API returning the
-        # exact same chunk before merging everything.
         # --------------------------------------------------
 
         collected_timestamps = set()
@@ -1051,13 +1314,6 @@ class CoinDCXProvider(BaseProvider):
             # ==================================================
             # CHECK FOR DUPLICATE CHUNK
             # ==================================================
-            #
-            # If ALL timestamps already exist, the API has
-            # returned a previously received historical range.
-            #
-            # We stop immediately instead of repeatedly adding
-            # the same 1000 candles.
-            # ==================================================
 
             chunk_timestamps = set(
                 chunk.index
@@ -1170,22 +1426,6 @@ class CoinDCXProvider(BaseProvider):
 
             # ==================================================
             # PAGINATION CURSOR
-            # ==================================================
-            #
-            # IMPORTANT:
-            #
-            # We MUST move backwards using the oldest NEW
-            # candle, not the newest candle.
-            #
-            # Example:
-            #
-            # Chunk #1:
-            # 10:00 -> 02:00
-            #
-            # Next request:
-            # endTime = 01:59:59.999
-            #
-            # This prevents overlap with Chunk #1.
             # ==================================================
 
             oldest_timestamp = (
@@ -1470,23 +1710,6 @@ class CoinDCXProvider(BaseProvider):
         # ==================================================
         # SOURCE CANDLE REQUIREMENT
         # ==================================================
-        #
-        # Example:
-        #
-        # 1000 × 5m
-        #
-        # requires:
-        #
-        # 1000 × 5 = 5000 × 1m
-        #
-        # Safety margin:
-        #
-        # multiplier × 2 = 10
-        #
-        # Total:
-        #
-        # 5010 × 1m
-        # ==================================================
 
         safety_margin = (
             multiplier * 2
@@ -1690,7 +1913,7 @@ class CoinDCXProvider(BaseProvider):
     ):
 
         # ==================================================
-        # NORMALIZE
+        # NORMALIZE TIMEFRAME
         # ==================================================
 
         original_timeframe = (
@@ -1699,6 +1922,10 @@ class CoinDCXProvider(BaseProvider):
             )
         )
 
+        # ==================================================
+        # LIMIT
+        # ==================================================
+
         limit = max(
             1,
             min(
@@ -1706,6 +1933,10 @@ class CoinDCXProvider(BaseProvider):
                 self.MAX_CANDLES
             )
         )
+
+        # ==================================================
+        # NORMALIZE SYMBOL
+        # ==================================================
 
         symbol = (
             self.normalize_symbol(
@@ -1725,6 +1956,13 @@ class CoinDCXProvider(BaseProvider):
         print(
             "Symbol    :",
             symbol
+        )
+
+        print(
+            "Market    :",
+            self.get_market_name(
+                symbol
+            )
         )
 
         print(
@@ -1837,6 +2075,13 @@ class CoinDCXProvider(BaseProvider):
         )
 
         print(
+            "Market    :",
+            self.get_market_name(
+                symbol
+            )
+        )
+
+        print(
             "Timeframe :",
             original_timeframe
         )
@@ -1885,6 +2130,16 @@ class CoinDCXProvider(BaseProvider):
 
             "historical":
                 True,
+
+            "supported_symbols":
+                list(
+                    self.SUPPORTED_SYMBOLS
+                ),
+
+            "supported_markets":
+                dict(
+                    self.MARKET_NAMES
+                ),
 
             "supported_timeframes":
                 list(
@@ -1985,6 +2240,11 @@ class CoinDCXProvider(BaseProvider):
             "live":
                 True,
 
+            "supported_symbols":
+                list(
+                    self.SUPPORTED_SYMBOLS
+                ),
+
             "timestamp":
                 self.get_server_time(),
 
@@ -2017,6 +2277,16 @@ class CoinDCXProvider(BaseProvider):
 
             "supports_websocket":
                 True,
+
+            "supported_symbols":
+                list(
+                    self.SUPPORTED_SYMBOLS
+                ),
+
+            "markets":
+                dict(
+                    self.MARKET_NAMES
+                ),
 
             "max_candles":
                 self.MAX_CANDLES,

@@ -1,108 +1,100 @@
 // ==========================================
-// Liquidity Hunter AI V20.6
-// chart.js
+// Liquidity Hunter AI
+// Chart JS V20.9.4
+// Futures Live Synchronization Edition
 // ==========================================
 
-console.log("==========================================");
-console.log("Liquidity Hunter AI V20.6 Chart Loaded");
-console.log("==========================================");
-
 console.log(
-    "LightweightCharts =",
-    LightweightCharts
-);
-
-console.log(
-    "Version =",
-    LightweightCharts.version
+    "Liquidity Hunter AI V20.9.4 Chart Loaded"
 );
 
 // ==========================================
-// JS Candle State
-//
-// IMPORTANT:
-// This variable must exist BEFORE
-// setChartData() and updateLastCandle().
+// STATE
 // ==========================================
 
 let jsLastCandleTime = null;
 
 // ==========================================
-// Create Chart
+// CHART
 // ==========================================
 
-const chart = LightweightCharts.createChart(
-    document.getElementById("chart"),
-    {
-        layout: {
-            background: {
-                color: "#131722"
+const chart =
+    LightweightCharts.createChart(
+        document.getElementById("chart"),
+        {
+            layout: {
+                background: {
+                    color: "#131722"
+                },
+
+                textColor: "#D9D9D9"
             },
 
-            textColor: "#D9D9D9"
-        },
+            grid: {
+                vertLines: {
+                    color: "#2B2B43"
+                },
 
-        grid: {
-            vertLines: {
-                color: "#2B2B43"
+                horzLines: {
+                    color: "#363C4E"
+                }
             },
 
-            horzLines: {
-                color: "#363C4E"
-            }
-        },
+            crosshair: {
+                mode:
+                    LightweightCharts
+                        .CrosshairMode
+                        .Normal
+            },
 
-        crosshair: {
-            mode:
-                LightweightCharts.CrosshairMode.Normal
-        },
+            rightPriceScale: {
+                borderColor: "#444"
+            },
 
-        rightPriceScale: {
-            borderColor: "#444"
-        },
+            timeScale: {
+                borderColor: "#444",
 
-        timeScale: {
-            borderColor: "#444",
+                timeVisible: true,
 
-            timeVisible: true,
+                secondsVisible: false
+            },
 
-            secondsVisible: false
-        },
-
-        autoSize: true
-    }
-);
+            autoSize: true
+        }
+    );
 
 // ==========================================
-// Candlestick Series
+// CANDLE SERIES
 // ==========================================
 
-const candleSeries = chart.addSeries(
-    LightweightCharts.CandlestickSeries,
-    {}
-);
+const candleSeries =
+    chart.addSeries(
+        LightweightCharts.CandlestickSeries,
+        {}
+    );
 
 // ==========================================
-// AI Overlay Series
+// SIGNAL SERIES
 // ==========================================
 
-const signalSeries = chart.addSeries(
-    LightweightCharts.LineSeries,
-    {
-        color: "#FFD700",
+const signalSeries =
+    chart.addSeries(
+        LightweightCharts.LineSeries,
+        {
+            color: "#FFD700",
 
-        lineWidth: 0,
+            lineWidth: 0,
 
-        lastValueVisible: false,
+            lastValueVisible: false,
 
-        priceLineVisible: false,
+            priceLineVisible: false,
 
-        crosshairMarkerVisible: false
-    }
-);
+            crosshairMarkerVisible: false
+        }
+    );
 
 // ==========================================
-// Trade Markers
+// TRADE MARKERS
 // ==========================================
 
 const tradeMarkers = [];
@@ -121,126 +113,63 @@ window.setChartData = function(candles)
 {
     try
     {
-        console.log("=================================");
-        console.log("setChartData() CALLED");
-
-        // ------------------------------------------
-        // Basic validation
-        // ------------------------------------------
-
         if (!Array.isArray(candles))
         {
-            console.error(
-                "❌ Historical data is not an array"
-            );
-
             return "INVALID_DATA";
         }
 
         if (candles.length === 0)
         {
-            console.warn(
-                "⚠️ No historical candles received"
-            );
-
             return "NO_DATA";
         }
 
-        console.log(
-            "Received historical candles :",
-            candles.length
-        );
-
-        // ------------------------------------------
-        // Normalize historical candles
-        // ------------------------------------------
-
         const normalizedCandles = [];
 
-        for (const candle of candles)
+        for (
+            const candle of candles
+        )
         {
-            const time = Number(
-                candle.time
-            );
+            const time =
+                Number(candle.time);
 
-            const open = Number(
-                candle.open
-            );
+            const open =
+                Number(candle.open);
 
-            const high = Number(
-                candle.high
-            );
+            const high =
+                Number(candle.high);
 
-            const low = Number(
-                candle.low
-            );
+            const low =
+                Number(candle.low);
 
-            const close = Number(
-                candle.close
-            );
-
-            // --------------------------------------
-            // Validate
-            // --------------------------------------
-
-            if (!Number.isFinite(time))
-            {
-                console.warn(
-                    "Skipping invalid candle time:",
-                    candle
-                );
-
-                continue;
-            }
+            const close =
+                Number(candle.close);
 
             if (
+                !Number.isFinite(time) ||
                 !Number.isFinite(open) ||
                 !Number.isFinite(high) ||
                 !Number.isFinite(low) ||
                 !Number.isFinite(close)
             )
             {
-                console.warn(
-                    "Skipping invalid OHLC:",
-                    candle
-                );
-
                 continue;
             }
 
             normalizedCandles.push({
-
                 time: time,
-
                 open: open,
-
                 high: high,
-
                 low: low,
-
                 close: close
-
             });
         }
-
-        // ------------------------------------------
-        // Validate normalized data
-        // ------------------------------------------
 
         if (
             normalizedCandles.length === 0
         )
         {
-            console.error(
-                "❌ No valid historical candles"
-            );
-
             return "NO_VALID_DATA";
         }
-
-        // ------------------------------------------
-        // Ensure chronological order
-        // ------------------------------------------
 
         normalizedCandles.sort(
             (a, b) =>
@@ -248,88 +177,71 @@ window.setChartData = function(candles)
         );
 
         // ------------------------------------------
-        // Historical data → Chart
+        // Remove duplicate timestamps
+        // ------------------------------------------
+
+        const uniqueCandles = [];
+
+        let previousTime = null;
+
+        for (
+            const candle of normalizedCandles
+        )
+        {
+            if (
+                previousTime !== null &&
+                candle.time === previousTime
+            )
+            {
+                uniqueCandles[
+                    uniqueCandles.length - 1
+                ] = candle;
+
+                continue;
+            }
+
+            uniqueCandles.push(candle);
+
+            previousTime =
+                candle.time;
+        }
+
+        // ------------------------------------------
+        // Set data
         // ------------------------------------------
 
         candleSeries.setData(
-            normalizedCandles
+            uniqueCandles
         );
 
         // ------------------------------------------
-        // IMPORTANT
-        //
-        // Register latest historical candle.
-        //
-        // This allows live candle protection
-        // to work correctly.
+        // Register latest candle
         // ------------------------------------------
 
         const lastCandle =
-            normalizedCandles[
-                normalizedCandles.length - 1
+            uniqueCandles[
+                uniqueCandles.length - 1
             ];
 
         jsLastCandleTime =
-            Number(
-                lastCandle.time
-            );
+            Number(lastCandle.time);
 
         // ------------------------------------------
-        // Debug
+        // Fit ONLY on historical load
         // ------------------------------------------
 
-        console.log(
-            "First Historical Candle :",
-            normalizedCandles[0]
-        );
-
-        console.log(
-            "Last Historical Candle :",
-            lastCandle
-        );
-
-        console.log(
-            "JS Latest Candle Time :",
-            jsLastCandleTime
-        );
-
-        console.log(
-            "Historical Candle Count :",
-            normalizedCandles.length
-        );
-
-        // ------------------------------------------
-        // IMPORTANT
-        //
-        // fitContent() is ONLY called here.
-        //
-        // It is NOT called during live candle
-        // updates.
-        //
-        // Therefore live updates cannot reset
-        // user's chart zoom/position.
-        // ------------------------------------------
-
-        chart.timeScale().fitContent();
-
-        console.log(
-            "Historical chart loaded successfully."
-        );
-
-        console.log("=================================");
+        chart
+            .timeScale()
+            .fitContent();
 
         return "HISTORICAL_LOADED";
-
     }
-    catch(err)
+    catch(error)
     {
         console.error(
-            "❌ Historical Chart Error"
+            "Historical chart error:",
+            error
         );
-
-        console.error(err);
-
-        console.log("=================================");
 
         return "ERROR";
     }
@@ -341,66 +253,30 @@ window.setChartData = function(candles)
 
 window.updateLastCandle = function(candle)
 {
-    console.log("=================================");
-    console.log(
-        "JS updateLastCandle() CALLED"
-    );
-
-    console.log(
-        "Incoming candle =",
-        candle
-    );
-
     try
     {
-        // ------------------------------------------
-        // Basic validation
-        // ------------------------------------------
-
         if (
             candle === null ||
             candle === undefined
         )
         {
-            console.error(
-                "❌ Candle is null"
-            );
-
             return "INVALID_CANDLE";
         }
 
-        // ------------------------------------------
-        // Normalize
-        // ------------------------------------------
-
         const incomingTime =
-            Number(
-                candle.time
-            );
+            Number(candle.time);
 
         const open =
-            Number(
-                candle.open
-            );
+            Number(candle.open);
 
         const high =
-            Number(
-                candle.high
-            );
+            Number(candle.high);
 
         const low =
-            Number(
-                candle.low
-            );
+            Number(candle.low);
 
         const close =
-            Number(
-                candle.close
-            );
-
-        // ------------------------------------------
-        // Validate timestamp
-        // ------------------------------------------
+            Number(candle.close);
 
         if (
             !Number.isFinite(
@@ -408,16 +284,8 @@ window.updateLastCandle = function(candle)
             )
         )
         {
-            console.error(
-                "❌ INVALID CANDLE TIME"
-            );
-
             return "INVALID_TIME";
         }
-
-        // ------------------------------------------
-        // Validate OHLC
-        // ------------------------------------------
 
         if (
             !Number.isFinite(open) ||
@@ -426,19 +294,27 @@ window.updateLastCandle = function(candle)
             !Number.isFinite(close)
         )
         {
-            console.error(
-                "❌ INVALID OHLC"
-            );
-
             return "INVALID_OHLC";
         }
 
-        // ------------------------------------------
-        // Normalize payload
-        // ------------------------------------------
+        // ==========================================
+        // STALE PROTECTION
+        // ==========================================
 
-        const normalizedCandle = {
+        if (
+            jsLastCandleTime !== null &&
+            incomingTime <
+            jsLastCandleTime
+        )
+        {
+            return "STALE";
+        }
 
+        // ==========================================
+        // UPDATE CHART
+        // ==========================================
+
+        candleSeries.update({
             time:
                 incomingTime,
 
@@ -453,176 +329,43 @@ window.updateLastCandle = function(candle)
 
             close:
                 close
-
-        };
-
-        console.log(
-            "Normalized Candle =",
-            normalizedCandle
-        );
-
-        console.log(
-            "JS Last Candle Time =",
-            jsLastCandleTime
-        );
-
-        console.log(
-            "JS Incoming Time =",
-            incomingTime
-        );
+        });
 
         // ==========================================
-        // STALE CANDLE PROTECTION
-        // ==========================================
-
-        if (
-            jsLastCandleTime !== null
-            &&
-            incomingTime <
-            jsLastCandleTime
-        )
-        {
-            console.warn(
-                "⚠️ JS STALE CANDLE IGNORED"
-            );
-
-            console.warn(
-                "Incoming =",
-                incomingTime
-            );
-
-            console.warn(
-                "Latest =",
-                jsLastCandleTime
-            );
-
-            return "STALE";
-        }
-
-        // ==========================================
-        // SAME CANDLE
-        //
-        // Existing candle is updated.
-        // ==========================================
-
-        if (
-            jsLastCandleTime !== null
-            &&
-            incomingTime ===
-            jsLastCandleTime
-        )
-        {
-            console.log(
-                "🟡 SAME CANDLE"
-            );
-
-            console.log(
-                "Updating current candle..."
-            );
-        }
-
-        // ==========================================
-        // NEW CANDLE
-        // ==========================================
-
-        if (
-            jsLastCandleTime === null
-            ||
-            incomingTime >
-            jsLastCandleTime
-        )
-        {
-            console.log(
-                "🟢 NEWER LIVE CANDLE"
-            );
-
-            console.log(
-                "New candle accepted."
-            );
-        }
-
-        // ==========================================
-        // UPDATE LIGHTWEIGHT CHART
-        // ==========================================
-
-        candleSeries.update(
-            normalizedCandle
-        );
-
-        // ==========================================
-        // Register latest timestamp
+        // REGISTER LATEST
         // ==========================================
 
         jsLastCandleTime =
             incomingTime;
 
-        console.log(
-            "✅ LIVE CANDLE UPDATE SUCCESS"
-        );
-
-        console.log(
-            "JS Latest Candle Time =",
-            jsLastCandleTime
-        );
-
-        console.log(
-            "IMPORTANT:"
-        );
-
-        console.log(
-            "Chart zoom/position NOT reset."
-        );
-
-        console.log("=================================");
-
         return "UPDATED";
-
     }
-    catch(err)
+    catch(error)
     {
         console.error(
-            "❌ LIVE CANDLE UPDATE FAILED"
+            "Live candle update error:",
+            error
         );
-
-        console.error(err);
-
-        console.log("=================================");
 
         return "ERROR";
     }
 };
 
 // ==========================================
-// AI TRADE SIGNAL OVERLAY
+// TRADE SIGNAL
 // ==========================================
 
 window.showTradeSignal = function(signal)
 {
     try
     {
-        console.log(
-            "AI SIGNAL RECEIVED"
-        );
-
-        console.log(
-            signal
-        );
-
-        if (
-            !signal
-        )
+        if (!signal)
         {
-            console.warn(
-                "No signal data"
-            );
-
             return;
         }
 
         const signalTime =
-            Number(
-                signal.time
-            );
+            Number(signal.time);
 
         if (
             !Number.isFinite(
@@ -630,28 +373,15 @@ window.showTradeSignal = function(signal)
             )
         )
         {
-            console.error(
-                "Invalid signal timestamp"
-            );
-
             return;
         }
 
-        // ------------------------------------------
-        // Normalize direction
-        // ------------------------------------------
-
         const direction =
             String(
-                signal.direction
+                signal.direction || ""
             ).toUpperCase();
 
-        // ------------------------------------------
-        // Add marker
-        // ------------------------------------------
-
         tradeMarkers.push({
-
             time:
                 signalTime,
 
@@ -672,29 +402,27 @@ window.showTradeSignal = function(signal)
 
             text:
                 direction
-
         });
 
         // ------------------------------------------
-        // Update markers
+        // Sort markers
         // ------------------------------------------
+
+        tradeMarkers.sort(
+            (a, b) =>
+                a.time - b.time
+        );
 
         markerPlugin.setMarkers(
             tradeMarkers
         );
-
-        console.log(
-            "✅ Signal Marker Added"
-        );
-
     }
-    catch(err)
+    catch(error)
     {
         console.error(
-            "❌ Overlay Error"
+            "Trade overlay error:",
+            error
         );
-
-        console.error(err);
     }
 };
 
@@ -716,30 +444,26 @@ window.addEventListener(
                     window.innerHeight
             });
         }
-        catch(err)
+        catch(error)
         {
             console.error(
                 "Chart resize error:",
-                err
+                error
             );
         }
     }
 );
 
 // ==========================================
-// CHART READY
+// READY
 // ==========================================
-
-console.log(
-    "================================="
-);
 
 console.log(
     "Liquidity Hunter AI Chart Ready"
 );
 
 console.log(
-    "Historical candles : 1000 supported"
+    "Historical candles : ENABLED"
 );
 
 console.log(
@@ -747,9 +471,9 @@ console.log(
 );
 
 console.log(
-    "Chart reset protection : ENABLED"
+    "GUI throttle       : 100ms"
 );
 
 console.log(
-    "================================="
+    "Chart reset        : PROTECTED"
 );

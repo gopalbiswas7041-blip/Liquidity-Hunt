@@ -1,76 +1,74 @@
 """
-============================================================
 Liquidity Hunter AI
-Controller V20.7 Production Edition
-============================================================
+Controller V20.9.4
+Futures Authoritative Live Synchronization Edition
 
-Responsibilities
-----------------
-• Market Data Management
-• Live Price Synchronization
-• Historical + Live Candle Merge
-• Historical Current-Candle Seeding
-• Same-Candle OHLCV Continuation
-• Signal Engine Pipeline
-• Trade Manager Pipeline
-• Dashboard Synchronization
-• TradingView Chart Synchronization
-• Dynamic Symbol Management
-• Dynamic Timeframe Management
-• Watchlist Support
-• WebSocket Lifecycle Management
-• Closed Candle Event
-• Closed-Candle AI Pipeline
-• Duplicate Closed-Candle Protection
+Architecture
+------------
+Historical Data:
+    CoinDCX Futures REST
 
-V20.7 FIXES
------------
-• Historical candle target = 1000
-• Historical current candle is seeded into LiveCandleBuilder
-• Active live candle is NOT re-seeded on every refresh
-• Historical + live OHLCV merge supported
-• Same-candle Open is preserved
-• Live High / Low / Close / Volume continuously synchronized
-• Closed candle merged into working DataFrame
-• Live candle update does NOT reload chart history
-• Chart historical data is NOT resent on every refresh
-• Chart reset / zoom reset protection
-• Historical chart reload only on:
-      - first load
-      - timeframe change
-      - symbol change
-      - explicit forced reload
-• Closed candle AI refresh does NOT reset chart
-• Duplicate closed candle protection retained
-============================================================
+Live Price:
+    CoinDCX Futures WebSocket
+
+Live Candle:
+    CoinDCX Futures WebSocket
+    -> LiveCandleBuilder
+
+Controller:
+    Futures WebSocket is authoritative.
+    REST is bootstrap/historical only.
+
+Flow:
+    Futures Tick
+        ↓
+    on_futures_live_tick()
+        ↓
+    current_price
+        ↓
+    Dashboard
+
+    Futures Tick
+        ↓
+    LiveCandleBuilder
+        ↓
+    on_futures_live_candle()
+        ↓
+    Chart
+        ↓
+    live_data_5m
+        ↓
+    Closed Candle
+        ↓
+    SignalEngine
+        ↓
+    TradeManager
 """
 
 from __future__ import annotations
 
 import traceback
-
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 
 from data.market_data import MarketData
-
 from strategy.signal_engine import SignalEngine
 from strategy.trade_manager import TradeManager
-
 from indicators.atr import ATR
 
 from providers.coindcx_provider import CoinDCXProvider
+from providers.coindcx_futures_provider import CoinDCXFuturesProvider
 from providers.coindcx_websocket import CoinDCXWebSocket
+from providers.coindcx_futures_websocket import CoinDCXFuturesWebSocket
 
 from utils.candle_sync import CandleSync
-from ui.chart_overlay import ChartOverlay
 
 
-# ==========================================================
-# Controller Configuration
-# ==========================================================
+# ============================================================
+# CONTROLLER CONFIG
+# ============================================================
 
 @dataclass
 class ControllerConfig:
@@ -91,9 +89,7 @@ class ControllerConfig:
 
     ENABLE_WATCHLIST = True
 
-    SOCKET_URL = (
-        "https://stream.coindcx.com"
-    )
+    SOCKET_URL = "https://stream.coindcx.com"
 
     SOCKET_CHANNEL_SUFFIX = "@trades"
 
@@ -101,45 +97,38 @@ class ControllerConfig:
 
     MARKET_TIMEZONE = "Asia/Kolkata"
 
-    # ======================================================
-    # Controller working history
-    # ======================================================
-
     MAX_CANDLE_HISTORY = 1000
 
 
-# ==========================================================
-# Controller
-# ==========================================================
+# ============================================================
+# CONTROLLER
+# ============================================================
 
 class Controller:
 
     def __init__(self):
 
-        print("=" * 60)
+        print("=" * 64)
         print("Liquidity Hunter AI")
-        print("Controller V20.7")
-        print("=" * 60)
+        print("Controller V20.9.4")
+        print("Futures Authoritative Live Synchronization")
+        print("=" * 64)
 
-        # ==================================================
-        # Runtime Configuration
-        # ==================================================
+        # ----------------------------------------------------
+        # Basic state
+        # ----------------------------------------------------
 
-        self.symbol = (
-            ControllerConfig.DEFAULT_SYMBOL
-        )
+        self.symbol = ControllerConfig.DEFAULT_SYMBOL
 
-        self.timeframe = (
-            ControllerConfig.DEFAULT_TIMEFRAME
-        )
+        self.timeframe = ControllerConfig.DEFAULT_TIMEFRAME
 
         self.higher_timeframe = (
             ControllerConfig.HIGHER_TIMEFRAME
         )
 
-        # ==================================================
-        # Runtime State
-        # ==================================================
+        # ----------------------------------------------------
+        # Live market state
+        # ----------------------------------------------------
 
         self.current_price = None
 
@@ -155,32 +144,35 @@ class Controller:
 
         self.latest_result = {}
 
-        # ==================================================
-        # Historical + Live Working Data
-        # ==================================================
+        # ----------------------------------------------------
+        # FUTURES LIVE PRICE AUTHORITY
+        # ----------------------------------------------------
+
+        self._futures_live_price_initialized = False
+
+        self._last_futures_tick_timestamp = None
+
+        self._last_futures_ws_price = None
+
+        # ----------------------------------------------------
+        # Live DataFrames
+        # ----------------------------------------------------
 
         self.live_data_5m = None
 
         self.live_data_15m = None
 
-        # ==================================================
-        # Closed Candle Protection
-        # ==================================================
+        # ----------------------------------------------------
+        # Closed candle state
+        # ----------------------------------------------------
 
         self.last_processed_closed_time = None
 
-        # ==================================================
-        # Live Candle Seed Protection
-        #
-        # Prevents refresh() from repeatedly replacing
-        # the active live candle with historical REST data.
-        # ==================================================
-
         self._live_candle_seed_timestamp = None
 
-        # ==================================================
-        # CHART SYNCHRONIZATION STATE
-        # ==================================================
+        # ----------------------------------------------------
+        # Chart state
+        # ----------------------------------------------------
 
         self._chart_data_loaded = False
 
@@ -192,27 +184,35 @@ class Controller:
 
         self._force_chart_reload = True
 
-        # ==================================================
-        # Core Components
-        # ==================================================
+        # ----------------------------------------------------
+        # Providers / Engines
+        # ----------------------------------------------------
 
-        self.provider = None
+        self.provider = CoinDCXProvider()
+
+        self.futures_provider = None
 
         self.market = None
 
-        self.signal_engine = None
+        self.signal_engine = SignalEngine()
 
-        self.trade_manager = None
+        self.trade_manager = TradeManager()
 
-        self.atr = None
+        self.atr = ATR()
 
-        self.candle_sync = None
+        self.candle_sync = CandleSync()
+
+        # ----------------------------------------------------
+        # WebSockets
+        # ----------------------------------------------------
 
         self.websocket = None
 
-        # ==================================================
-        # GUI References
-        # ==================================================
+        self.futures_websocket = None
+
+        # ----------------------------------------------------
+        # UI references
+        # ----------------------------------------------------
 
         self.dashboard = None
 
@@ -222,492 +222,426 @@ class Controller:
 
         self.watchlist = None
 
-        # ==================================================
-        # Provider
-        # ==================================================
-
-        self.provider = (
-            CoinDCXProvider()
-        )
-
-        # ==================================================
-        # Market Data
-        # ==================================================
-
-        self.market = MarketData(
-            self.symbol,
-            provider=self.provider
-        )
-
-        # ==================================================
-        # Signal Engine
-        # ==================================================
-
-        self.signal_engine = SignalEngine()
-
-        # ==================================================
-        # Trade Manager
-        # ==================================================
-
-        self.trade_manager = TradeManager()
-
-        # ==================================================
-        # ATR
-        # ==================================================
-
-        self.atr = ATR()
-
-        # ==================================================
-        # Candle Synchronizer
-        # ==================================================
-
-        self.candle_sync = CandleSync()
-
-        # ==================================================
-        # WebSocket
-        # ==================================================
-
-        self.websocket = CoinDCXWebSocket(
-            timeframe=self.timeframe
-        )
-
-        self.websocket.set_controller(
-            self
-        )
-
-        # ==================================================
-        # Tick Callback
-        # ==================================================
-
-        self.websocket.set_tick_callback(
-            self.on_live_tick
-        )
-
-        # ==================================================
-        # Live Candle Callback
-        # ==================================================
-
-        self.websocket.set_candle_callback(
-            self.on_live_candle
-        )
-
-        # ==================================================
-        # Closed Candle Callback
-        # ==================================================
-
-        self.websocket.set_candle_closed_callback(
-            self.on_candle_closed
-        )
-
-        print(
-            "Core Engine Initialized"
-        )
-
-        print(
-            "Runtime Initialized"
-        )
-
-    # ======================================================
-    # WebSocket
-    # ======================================================
-
-    def start_websocket(self):
-
-        if self.websocket is None:
-
-            return
-
-        if self.websocket.is_running():
-
-            return
-
-        channel = (
-            f"{self.symbol}"
-            f"{ControllerConfig.SOCKET_CHANNEL_SUFFIX}"
-        )
-
-        print(
-            f"Starting WebSocket : {channel}"
-        )
-
-        self.websocket.connect(
-            url=ControllerConfig.SOCKET_URL,
-            symbol=channel
-        )
-
-    # ======================================================
-
-    def stop_websocket(self):
-
-        if self.websocket:
-
-            self.websocket.disconnect()
-
-    # ======================================================
-
-    def restart_websocket(self):
-
-        if not self.websocket:
-
-            return
-
-        self.websocket.disconnect()
-
-        channel = (
-            f"{self.symbol}"
-            f"{ControllerConfig.SOCKET_CHANNEL_SUFFIX}"
-        )
-
-        self.websocket.connect(
-            url=ControllerConfig.SOCKET_URL,
-            symbol=channel
-        )
-
-    # ======================================================
-    # Timeframe
-    # ======================================================
-
-    def change_timeframe(
-        self,
-        timeframe
-    ):
-
-        print(
-            "BUTTON CLICKED :",
-            timeframe
-        )
-
-        if not timeframe:
-
-            return
-
-        timeframe = str(
-            timeframe
-        )
-
-        if timeframe == self.timeframe:
-
-            print(
-                "Timeframe already active:",
-                timeframe
-            )
-
-            return
-
-        print(
-            f"\nChanging Timeframe : "
-            f"{self.timeframe} -> {timeframe}"
-        )
-
-        # --------------------------------------------------
-        # Pause Candle Builder
-        # --------------------------------------------------
-
-        if self.websocket:
-
-            try:
-
-                self.websocket.candle_builder.pause()
-
-            except Exception:
-
-                traceback.print_exc()
-
-        # --------------------------------------------------
-        # Update timeframe
-        # --------------------------------------------------
-
-        self.timeframe = timeframe
-
-        # --------------------------------------------------
-        # Reset closed candle protection
-        # --------------------------------------------------
-
-        self.last_processed_closed_time = None
-
-        # --------------------------------------------------
-        # Reset live candle seed state
-        # --------------------------------------------------
-
-        self._live_candle_seed_timestamp = None
-
-        # --------------------------------------------------
-        # Change Candle Builder
-        # --------------------------------------------------
-
-        if self.websocket:
-
-            try:
-
-                self.websocket.set_timeframe(
-                    self.timeframe
-                )
-
-            except Exception:
-
-                traceback.print_exc()
-
-        # --------------------------------------------------
-        # Clear live working data
-        # --------------------------------------------------
-
-        self.live_data_5m = None
-
-        # --------------------------------------------------
-        # Clear market cache
-        # --------------------------------------------------
-
-        if self.market:
-
-            try:
-
-                self.market.clear_cache()
-
-            except Exception:
-
-                traceback.print_exc()
-
-        # ==================================================
-        # Chart MUST receive new historical dataset
-        # ==================================================
-
-        self._chart_data_loaded = False
-
-        self._chart_loaded_symbol = None
-
-        self._chart_loaded_timeframe = None
-
-        self._chart_loaded_last_timestamp = None
-
-        self._force_chart_reload = True
-
-        # --------------------------------------------------
-        # Resume Candle Builder
-        # --------------------------------------------------
-
-        if self.websocket:
-
-            try:
-
-                self.websocket.candle_builder.resume()
-
-            except Exception:
-
-                traceback.print_exc()
-
-        # --------------------------------------------------
-        # Reload market data
-        # --------------------------------------------------
-
-        self.refresh()
-
-    # ======================================================
-    # Refresh
-    # ======================================================
-
-    def refresh(self):
+        # ====================================================
+        # FUTURES REST PROVIDER
+        # ====================================================
 
         try:
 
-            print(
-                "\nRefreshing Market Data..."
-            )
-
-            # ==================================================
-            # Historical Data
-            # ==================================================
-
-            data_5m = (
-                self.market.refresh_cache(
-                    self.timeframe
+            self.futures_provider = (
+                CoinDCXFuturesProvider(
+                    self.symbol
                 )
             )
 
-            data_15m = (
-                self.market.refresh_cache(
-                    self.higher_timeframe
-                )
-            )
-
-            # ==================================================
-            # Validate
-            # ==================================================
-
-            if data_5m is None:
-
-                print(
-                    "ERROR: Market Data is None"
-                )
-
-                return {
-                    "signal": "ERROR",
-                    "confidence": 0,
-                    "trade_status": "ERROR",
-                    "data_5m": None,
-                    "data_15m": data_15m,
-                }
-
-            # ==================================================
-            # Normalize
-            # ==================================================
-
-            data_5m = (
-                self._normalize_dataframe(
-                    data_5m
-                )
-            )
-
-            if data_15m is not None:
-
-                data_15m = (
-                    self._normalize_dataframe(
-                        data_15m
-                    )
-                )
-
-            # ==================================================
-            # LIMIT WORKING HISTORY TO 1000
-            # ==================================================
-
-            data_5m = (
-                self._limit_dataframe_history(
-                    data_5m
-                )
-            )
-
-            if data_15m is not None:
-
-                data_15m = (
-                    self._limit_dataframe_history(
-                        data_15m
-                    )
-                )
-
-            # ==================================================
-            # Store Working Data
-            # ==================================================
-
-            self.live_data_5m = (
-                data_5m.copy()
-            )
-
-            if data_15m is not None:
-
-                self.live_data_15m = (
-                    data_15m.copy()
-                )
-
-            else:
-
-                self.live_data_15m = None
-
-            # ==================================================
-            # Debug History
-            # ==================================================
+            self.futures_provider.connect()
 
             print(
-                "5m/Current TF Candles :",
-                len(self.live_data_5m)
+                "✅ Futures REST Provider initialized"
             )
 
-            if self.live_data_15m is not None:
+        except Exception:
 
-                print(
-                    "15m Candles :",
-                    len(self.live_data_15m)
+            print(
+                "❌ Futures REST Provider initialization failed"
+            )
+
+            traceback.print_exc()
+
+        # ====================================================
+        # SPOT MARKET COMPATIBILITY
+        # ====================================================
+
+        try:
+
+            self.market = MarketData(
+                self.symbol,
+                provider=self.provider
+            )
+
+        except Exception:
+
+            traceback.print_exc()
+
+            self.market = None
+
+        # ====================================================
+        # SPOT WEBSOCKET
+        #
+        # Compatibility only.
+        #
+        # NEVER authoritative for Futures price.
+        # ====================================================
+
+        try:
+
+            self.websocket = CoinDCXWebSocket(
+                timeframe=self.timeframe
+            )
+
+            self.websocket.set_controller(self)
+
+            self.websocket.set_tick_callback(
+                self.on_live_tick
+            )
+
+            self.websocket.set_candle_callback(
+                self.on_live_candle
+            )
+
+            self.websocket.set_candle_closed_callback(
+                self.on_candle_closed
+            )
+
+        except Exception:
+
+            traceback.print_exc()
+
+            self.websocket = None
+
+        # ====================================================
+        # FUTURES WEBSOCKET
+        # ====================================================
+
+        try:
+
+            self.futures_websocket = (
+                CoinDCXFuturesWebSocket(
+                    timeframe=self.timeframe,
+                    symbol=self.symbol,
                 )
+            )
 
-            # ==================================================
-            # IMPORTANT V20.7
+            # Controller reference
+            self.futures_websocket.set_controller(
+                self
+            )
+
+            # IMPORTANT:
+            # Explicit callback binding.
             #
-            # Seed the latest historical candle into the
-            # LiveCandleBuilder BEFORE live ticks continue.
-            #
-            # The helper checks whether the same active candle
-            # is already running. Therefore refresh() will NOT
-            # reset live OHLCV on every refresh.
-            # ==================================================
+            # This is one of the main changes in V20.9.4.
+            # =================================================
 
-            self._sync_live_candle_seed()
+            self._bind_futures_websocket_callbacks()
 
-            # ==================================================
-            # WebSocket
-            # ==================================================
+        except Exception:
 
-            if self.websocket:
+            print(
+                "❌ Futures WebSocket initialization failed"
+            )
 
-                if not self.websocket.is_running():
+            traceback.print_exc()
 
-                    self.start_websocket()
+            self.futures_websocket = None
 
-            # ==================================================
-            # Current Price
-            # ==================================================
+        # ====================================================
+        # AUTHORITY LOG
+        # ====================================================
 
-            if ControllerConfig.ENABLE_PRICE_SYNC:
+        print(
+            "Historical Data Authority : FUTURES REST"
+        )
+
+        print(
+            "Live Price Authority       : FUTURES WEBSOCKET"
+        )
+
+        print(
+            "Live Candle Authority      : FUTURES WEBSOCKET"
+        )
+
+        print(
+            "REST Live Price            : BOOTSTRAP ONLY"
+        )
+
+    # =========================================================
+    # FUTURES WEBSOCKET CALLBACK BINDING
+    # =========================================================
+
+    def _bind_futures_websocket_callbacks(self):
+
+        """
+        Explicitly connect Futures WebSocket events to
+        Controller authoritative handlers.
+
+        This prevents a situation where the WebSocket is
+        connected and receiving ticks but Controller never
+        receives the live price.
+        """
+
+        ws = self.futures_websocket
+
+        if ws is None:
+            return False
+
+        bound = []
+
+        # -----------------------------------------------------
+        # Live tick
+        # -----------------------------------------------------
+
+        tick_methods = (
+            "set_tick_callback",
+            "set_trade_callback",
+            "set_price_callback",
+            "set_live_tick_callback",
+        )
+
+        for method_name in tick_methods:
+
+            method = getattr(
+                ws,
+                method_name,
+                None
+            )
+
+            if callable(method):
 
                 try:
 
-                    self.current_price = (
-                        self.market.get_live_price()
+                    method(
+                        self.on_futures_live_tick
                     )
+
+                    bound.append(method_name)
+
+                    print(
+                        f"✅ Futures tick callback bound: "
+                        f"{method_name}"
+                    )
+
+                    # One successful tick callback
+                    # registration is enough.
+                    break
 
                 except Exception:
 
-                    self.current_price = None
+                    continue
 
-            # ==================================================
-            # Signal Engine
-            # ==================================================
+        # -----------------------------------------------------
+        # Live candle
+        # -----------------------------------------------------
 
-            signal = (
-                self.signal_engine.generate_signal(
-                    self.live_data_5m,
-                    self.live_data_15m
+        candle_methods = (
+            "set_candle_callback",
+            "set_live_candle_callback",
+        )
+
+        for method_name in candle_methods:
+
+            method = getattr(
+                ws,
+                method_name,
+                None
+            )
+
+            if callable(method):
+
+                try:
+
+                    method(
+                        self.on_futures_live_candle
+                    )
+
+                    bound.append(method_name)
+
+                    print(
+                        f"✅ Futures candle callback bound: "
+                        f"{method_name}"
+                    )
+
+                    break
+
+                except Exception:
+
+                    continue
+
+        # -----------------------------------------------------
+        # Closed candle
+        # -----------------------------------------------------
+
+        closed_methods = (
+            "set_candle_closed_callback",
+            "set_closed_candle_callback",
+            "set_live_candle_closed_callback",
+        )
+
+        for method_name in closed_methods:
+
+            method = getattr(
+                ws,
+                method_name,
+                None
+            )
+
+            if callable(method):
+
+                try:
+
+                    method(
+                        self.on_futures_candle_closed
+                    )
+
+                    bound.append(method_name)
+
+                    print(
+                        f"✅ Futures closed-candle callback bound: "
+                        f"{method_name}"
+                    )
+
+                    break
+
+                except Exception:
+
+                    continue
+
+        if not bound:
+
+            print(
+                "⚠️ Futures WebSocket callback methods "
+                "were not found."
+            )
+
+            print(
+                "⚠️ set_controller(self) remains active "
+                "as compatibility path."
+            )
+
+        return bool(bound)
+
+    # =========================================================
+    # FUTURES REST
+    # =========================================================
+
+    def _get_futures_candles(
+        self,
+        timeframe,
+        limit=1000
+    ):
+
+        if self.futures_provider is None:
+
+            raise RuntimeError(
+                "Futures Provider is not initialized."
+            )
+
+        df = self.futures_provider.get_candles(
+            symbol=self.symbol,
+            timeframe=timeframe,
+            limit=limit,
+        )
+
+        return self._limit_dataframe_history(
+            self._normalize_dataframe(df)
+        )
+
+    # =========================================================
+    # REST LIVE PRICE
+    #
+    # IMPORTANT:
+    # This function is ONLY bootstrap/fallback.
+    # =========================================================
+
+    def _get_futures_live_price(self):
+
+        if self.futures_provider is None:
+            return None
+
+        try:
+
+            price = float(
+                self.futures_provider.get_live_price(
+                    self.symbol
                 )
             )
 
-            self.latest_signal = signal
+            if price > 0:
+                return price
 
-            # ==================================================
-            # Trade Manager
-            # ==================================================
+        except Exception:
 
-            trade = (
-                self.trade_manager.generate_trade(
-                    signal,
-                    self.live_data_5m
-                )
+            pass
+
+        return None
+
+    # =========================================================
+    # FUTURES WS PRICE STATE
+    # =========================================================
+
+    def _has_futures_websocket_price(self):
+
+        return bool(
+            self._futures_live_price_initialized
+            and
+            self._last_futures_ws_price is not None
+            and
+            self._last_futures_ws_price > 0
+        )
+
+    # =========================================================
+    # AUTHORITATIVE PRICE
+    # =========================================================
+
+    def _get_authoritative_futures_price(self):
+
+        # -----------------------------------------------------
+        # 1. Futures WebSocket
+        # -----------------------------------------------------
+
+        if self._has_futures_websocket_price():
+
+            return float(
+                self._last_futures_ws_price
             )
 
-            self.latest_trade = trade
+        # -----------------------------------------------------
+        # 2. Existing controller state
+        # -----------------------------------------------------
 
-            # ==================================================
-            # Build Result
-            # ==================================================
+        if (
+            self.current_price is not None
+            and
+            self.current_price > 0
+        ):
 
-            result = self._build_result(
-                signal=signal,
-                trade=trade
+            return float(
+                self.current_price
             )
 
-            self.latest_result = result
+        # -----------------------------------------------------
+        # 3. REST bootstrap
+        # -----------------------------------------------------
 
-            self.last_refresh = (
-                result["last_refresh"]
+        return self._get_futures_live_price()
+
+    # =========================================================
+    # WEBSOCKET LIFECYCLE
+    # =========================================================
+
+    def start_futures_websocket(self):
+
+        if self.futures_websocket is None:
+            return False
+
+        try:
+
+            # Make absolutely sure callbacks are present
+            # before every connection.
+
+            self._bind_futures_websocket_callbacks()
+
+            if self.futures_websocket.is_running():
+
+                return False
+
+            result = self.futures_websocket.connect(
+                url=ControllerConfig.SOCKET_URL,
+                symbol=self.symbol,
             )
 
-            # ==================================================
-            # Chart
-            # ==================================================
-
-            self._sync_chart()
-
-            # ==================================================
-            # Debug
-            # ==================================================
-
-            self._print_signal_result(
+            print(
+                "🚀 Futures WebSocket start result:",
                 result
             )
 
@@ -717,77 +651,566 @@ class Controller:
 
             traceback.print_exc()
 
-            return {
+            return False
 
-                "symbol":
-                    self.symbol,
+    def stop_futures_websocket(self):
 
-                "timeframe":
-                    self.timeframe,
+        if self.futures_websocket:
 
-                "live_price":
-                    self.current_price,
+            try:
 
-                "signal":
-                    "ERROR",
+                self.futures_websocket.disconnect()
 
-                "confidence":
-                    0,
+            except Exception:
 
-                "trade_status":
-                    "ERROR",
+                traceback.print_exc()
 
-                "data_5m":
+    def restart_futures_websocket(self):
+
+        self.stop_futures_websocket()
+
+        return self.start_futures_websocket()
+
+    # =========================================================
+    # SPOT WEBSOCKET
+    # =========================================================
+
+    def start_spot_websocket(self):
+
+        if self.websocket is None:
+            return False
+
+        try:
+
+            if self.websocket.is_running():
+                return False
+
+            return self.websocket.connect(
+                url=ControllerConfig.SOCKET_URL,
+                symbol=(
+                    f"{self.symbol}"
+                    f"{ControllerConfig.SOCKET_CHANNEL_SUFFIX}"
+                ),
+            )
+
+        except Exception:
+
+            traceback.print_exc()
+
+            return False
+
+    # =========================================================
+    # COMPATIBILITY API
+    # =========================================================
+
+    def start_websocket(self):
+
+        return self.start_futures_websocket()
+
+    def stop_websocket(self):
+
+        self.stop_futures_websocket()
+
+    def restart_websocket(self):
+
+        return self.restart_futures_websocket()
+
+    # =========================================================
+    # SYMBOL
+    # =========================================================
+
+    def change_symbol(self, symbol):
+
+        try:
+
+            new_symbol = str(
+                symbol
+            ).strip().upper()
+
+            if self.futures_provider:
+
+                new_symbol = (
+                    self.futures_provider
+                    .normalize_symbol(
+                        new_symbol
+                    )
+                )
+
+            elif self.futures_websocket:
+
+                new_symbol = (
+                    self.futures_websocket
+                    .normalize_symbol(
+                        new_symbol
+                    )
+                )
+
+            if new_symbol == self.symbol:
+
+                return False
+
+            # -------------------------------------------------
+            # Stop old Futures stream
+            # -------------------------------------------------
+
+            self.stop_futures_websocket()
+
+            # -------------------------------------------------
+            # Reset builder
+            # -------------------------------------------------
+
+            if self.futures_websocket:
+
+                try:
+
+                    self.futures_websocket.candle_builder.reset()
+
+                except Exception:
+
+                    pass
+
+            # -------------------------------------------------
+            # Change symbol
+            # -------------------------------------------------
+
+            self.symbol = new_symbol
+
+            # -------------------------------------------------
+            # Reset authoritative price
+            # -------------------------------------------------
+
+            self._futures_live_price_initialized = False
+
+            self._last_futures_tick_timestamp = None
+
+            self._last_futures_ws_price = None
+
+            # -------------------------------------------------
+            # Update Futures REST
+            # -------------------------------------------------
+
+            if self.futures_provider:
+
+                self.futures_provider.set_symbol(
+                    new_symbol
+                )
+
+            # -------------------------------------------------
+            # Update Futures WebSocket
+            # -------------------------------------------------
+
+            if self.futures_websocket:
+
+                self.futures_websocket.set_symbol(
+                    new_symbol
+                )
+
+                # Re-bind after symbol change.
+                self._bind_futures_websocket_callbacks()
+
+            # -------------------------------------------------
+            # Spot compatibility
+            # -------------------------------------------------
+
+            if self.market:
+
+                try:
+
+                    self.market.set_symbol(
+                        new_symbol
+                    )
+
+                    self.market.clear_cache()
+
+                except Exception:
+
+                    pass
+
+            # -------------------------------------------------
+            # Reset data
+            # -------------------------------------------------
+
+            self.live_data_5m = None
+
+            self.live_data_15m = None
+
+            self.current_price = None
+
+            self.last_tick = None
+
+            self.last_candle = None
+
+            self.latest_signal = None
+
+            self.latest_trade = None
+
+            self.latest_result = {}
+
+            self.last_processed_closed_time = None
+
+            self._live_candle_seed_timestamp = None
+
+            # -------------------------------------------------
+            # Reset chart
+            # -------------------------------------------------
+
+            self._force_chart_reload = True
+
+            self._chart_data_loaded = False
+
+            self._chart_loaded_symbol = None
+
+            self._chart_loaded_timeframe = None
+
+            self._chart_loaded_last_timestamp = None
+
+            # -------------------------------------------------
+            # Bootstrap historical data
+            # -------------------------------------------------
+
+            result = self.refresh()
+
+            if (
+                isinstance(result, dict)
+                and
+                result.get("signal") == "ERROR"
+            ):
+
+                return False
+
+            # -------------------------------------------------
+            # Start new Futures stream
+            # -------------------------------------------------
+
+            self.start_futures_websocket()
+
+            return True
+
+        except Exception:
+
+            traceback.print_exc()
+
+            return False
+
+    # =========================================================
+    # TIMEFRAME
+    # =========================================================
+
+    def change_timeframe(self, timeframe):
+
+        if not timeframe:
+            return
+
+        tf = str(
+            timeframe
+        ).strip()
+
+        if tf == self.timeframe:
+            return
+
+        # -----------------------------------------------------
+        # Stop Futures stream
+        # -----------------------------------------------------
+
+        self.stop_futures_websocket()
+
+        # -----------------------------------------------------
+        # Update timeframe
+        # -----------------------------------------------------
+
+        self.timeframe = tf
+
+        # -----------------------------------------------------
+        # Reset candle state
+        # -----------------------------------------------------
+
+        self.last_processed_closed_time = None
+
+        self._live_candle_seed_timestamp = None
+
+        # -----------------------------------------------------
+        # Reset Futures live price state
+        # -----------------------------------------------------
+
+        self._futures_live_price_initialized = False
+
+        self._last_futures_tick_timestamp = None
+
+        self._last_futures_ws_price = None
+
+        # -----------------------------------------------------
+        # Update Futures WebSocket
+        # -----------------------------------------------------
+
+        if self.futures_websocket:
+
+            self.futures_websocket.set_timeframe(
+                tf
+            )
+
+            self._bind_futures_websocket_callbacks()
+
+        # -----------------------------------------------------
+        # Spot compatibility
+        # -----------------------------------------------------
+
+        if self.websocket:
+
+            try:
+
+                self.websocket.set_timeframe(
+                    tf
+                )
+
+            except Exception:
+
+                pass
+
+        # -----------------------------------------------------
+        # Reset live data
+        # -----------------------------------------------------
+
+        self.live_data_5m = None
+
+        # -----------------------------------------------------
+        # Clear REST cache
+        # -----------------------------------------------------
+
+        if self.market:
+
+            try:
+
+                self.market.clear_cache()
+
+            except Exception:
+
+                pass
+
+        # -----------------------------------------------------
+        # Reset chart
+        # -----------------------------------------------------
+
+        self._force_chart_reload = True
+
+        self._chart_data_loaded = False
+
+        self._chart_loaded_symbol = None
+
+        self._chart_loaded_timeframe = None
+
+        self._chart_loaded_last_timestamp = None
+
+        # -----------------------------------------------------
+        # Refresh bootstrap data
+        # -----------------------------------------------------
+
+        self.refresh()
+
+        # -----------------------------------------------------
+        # Restart Futures stream
+        # -----------------------------------------------------
+
+        self.start_futures_websocket()
+
+    # =========================================================
+    # REFRESH
+    # =========================================================
+
+    def refresh(self):
+
+        try:
+
+            # =================================================
+            # 1. FUTURES REST HISTORICAL DATA
+            # =================================================
+
+            data_5m = self._get_futures_candles(
+                self.timeframe,
+                ControllerConfig.MAX_CANDLE_HISTORY,
+            )
+
+            data_15m = self._get_futures_candles(
+                self.higher_timeframe,
+                ControllerConfig.MAX_CANDLE_HISTORY,
+            )
+
+            # =================================================
+            # 2. COPY INTO LIVE DATA
+            # =================================================
+
+            self.live_data_5m = (
+                data_5m.copy()
+            )
+
+            self.live_data_15m = (
+                data_15m.copy()
+                if data_15m is not None
+                else None
+            )
+
+            # =================================================
+            # 3. SEED LIVE CANDLE
+            # =================================================
+
+            self._sync_live_candle_seed()
+
+            # =================================================
+            # 4. IF BUILDER ALREADY HAS A LIVE CANDLE,
+            #    MERGE IT.
+            # =================================================
+
+            if self.futures_websocket:
+
+                try:
+
+                    candle = (
+                        self.futures_websocket
+                        .candle_builder
+                        .get_current_candle()
+                    )
+
+                    if candle is not None:
+
+                        self._merge_live_candle(
+                            candle
+                        )
+
+                except Exception:
+
+                    traceback.print_exc()
+
+            # =================================================
+            # 5. ENSURE FUTURES WS IS RUNNING
+            # =================================================
+
+            if (
+                self.futures_websocket
+                and
+                not self.futures_websocket.is_running()
+            ):
+
+                self.start_futures_websocket()
+
+            # =================================================
+            # 6. PRICE SYNC
+            #
+            # IMPORTANT:
+            #
+            # Once Futures WS has supplied one valid price,
+            # REST is NEVER allowed to overwrite it.
+            # =================================================
+
+            if ControllerConfig.ENABLE_PRICE_SYNC:
+
+                if self._has_futures_websocket_price():
+
+                    self.current_price = float(
+                        self._last_futures_ws_price
+                    )
+
+                elif self.current_price is None:
+
+                    bootstrap = (
+                        self._get_futures_live_price()
+                    )
+
+                    if bootstrap is not None:
+
+                        self.current_price = bootstrap
+
+            # =================================================
+            # 7. AI ANALYSIS
+            # =================================================
+
+            signal = (
+                self.signal_engine.generate_signal(
                     self.live_data_5m,
-
-                "data_15m":
                     self.live_data_15m,
+                )
+            )
 
+            self.latest_signal = signal
+
+            # =================================================
+            # 8. TRADE MANAGER
+            # =================================================
+
+            trade = (
+                self.trade_manager.generate_trade(
+                    signal,
+                    self.live_data_5m,
+                )
+            )
+
+            self.latest_trade = trade
+
+            # =================================================
+            # 9. RESULT
+            # =================================================
+
+            result = self._build_result(
+                signal,
+                trade,
+            )
+
+            self.latest_result = result
+
+            self.last_refresh = (
+                result["last_refresh"]
+            )
+
+            # =================================================
+            # 10. CHART
+            # =================================================
+
+            self._sync_chart()
+
+            return result
+
+        except Exception:
+
+            traceback.print_exc()
+
+            return {
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
+                "live_price": self.current_price,
+                "signal": "ERROR",
+                "confidence": 0,
+                "trade_status": "ERROR",
+                "data_5m": self.live_data_5m,
+                "data_15m": self.live_data_15m,
             }
 
-    # ======================================================
-    # Limit DataFrame History
-    # ======================================================
+    # =========================================================
+    # DATAFRAME HELPERS
+    # =========================================================
 
     def _limit_dataframe_history(
         self,
         dataframe
     ):
 
-        if dataframe is None:
-
-            return None
-
-        if dataframe.empty:
-
-            return dataframe
-
-        max_rows = (
-            ControllerConfig
-            .MAX_CANDLE_HISTORY
-        )
-
-        if len(dataframe) <= max_rows:
+        if (
+            dataframe is None
+            or
+            dataframe.empty
+        ):
 
             return dataframe
-
-        print(
-            f"History > {max_rows}. "
-            f"Keeping latest {max_rows} candles."
-        )
 
         return dataframe.iloc[
-            -max_rows:
+            -ControllerConfig.MAX_CANDLE_HISTORY:
         ].copy()
-
-    # ======================================================
-    # DataFrame Normalization
-    # ======================================================
 
     def _normalize_dataframe(
         self,
         dataframe
     ):
+
+        if dataframe is None:
+
+            return pd.DataFrame()
 
         df = dataframe.copy()
 
@@ -798,40 +1221,32 @@ class Controller:
 
             df.index = pd.to_datetime(
                 df.index,
-                utc=True
+                utc=True,
+            )
+
+        elif df.index.tz is None:
+
+            df.index = df.index.tz_localize(
+                "UTC"
             )
 
         else:
 
-            if df.index.tz is None:
-
-                df.index = (
-                    df.index
-                    .tz_localize("UTC")
-                )
-
-            else:
-
-                df.index = (
-                    df.index
-                    .tz_convert("UTC")
-                )
+            df.index = df.index.tz_convert(
+                "UTC"
+            )
 
         df = df.sort_index()
 
-        df = (
-            df[
-                ~df.index.duplicated(
-                    keep="last"
-                )
-            ]
-        )
+        return df[
+            ~df.index.duplicated(
+                keep="last"
+            )
+        ]
 
-        return df
-
-    # ======================================================
-    # Build Result
-    # ======================================================
+    # =========================================================
+    # RESULT
+    # =========================================================
 
     def _build_result(
         self,
@@ -859,272 +1274,135 @@ class Controller:
                 trade
             )
 
-        result["symbol"] = (
-            self.symbol
-        )
+        result.update({
 
-        result["timeframe"] = (
-            self.timeframe
-        )
+            "symbol":
+                self.symbol,
 
-        result["live_price"] = (
-            self.current_price
-        )
+            "timeframe":
+                self.timeframe,
 
-        result["data_5m"] = (
-            self.live_data_5m
-        )
+            "live_price":
+                self.current_price,
 
-        result["data_15m"] = (
-            self.live_data_15m
-        )
+            "market_type":
+                "FUTURES",
 
-        result["last_refresh"] = (
-            datetime.now()
-        )
+            "price_source":
+                "CoinDCX Futures",
+
+            "live_price_source":
+                (
+                    "CoinDCX Futures WebSocket"
+                    if
+                    self._has_futures_websocket_price()
+                    else
+                    "CoinDCX Futures REST Bootstrap"
+                ),
+
+            "data_5m":
+                self.live_data_5m,
+
+            "data_15m":
+                self.live_data_15m,
+
+            "last_refresh":
+                datetime.now(
+                    timezone.utc
+                ),
+        })
 
         return result
 
-    # ======================================================
-    # Live Candle Seed Synchronization
-    # ======================================================
+    # =========================================================
+    # HISTORICAL -> LIVE CANDLE SEED
+    # =========================================================
 
-    def _sync_live_candle_seed(
-        self
-    ):
+    def _sync_live_candle_seed(self):
 
-        """
-        Synchronize the latest historical REST candle with
-        LiveCandleBuilder.
-
-        IMPORTANT
-        ---------
-        This method does NOT blindly seed on every refresh.
-
-        If the LiveCandleBuilder is already working on the
-        same candle timestamp, the active candle is preserved.
-
-        This prevents:
-
-            historical refresh
-                    ↓
-            live OHLC reset
-                    ↓
-            wrong candle values
-
-        Expected flow:
-
-            Historical REST candle
-                    ↓
-            Seed once
-                    ↓
-            Live ticks
-                    ↓
-            Same candle OHLC continuation
-        """
-
-        if self.live_data_5m is None:
-
-            print(
-                "Live Candle Seed skipped:"
-                " live_data_5m is None"
-            )
+        if (
+            self.live_data_5m is None
+            or
+            self.live_data_5m.empty
+        ):
 
             return False
 
-        if self.live_data_5m.empty:
-
-            print(
-                "Live Candle Seed skipped:"
-                " live_data_5m is empty"
-            )
+        if self.futures_websocket is None:
 
             return False
 
-        if self.websocket is None:
+        builder = (
+            self.futures_websocket
+            .candle_builder
+        )
 
-            print(
-                "Live Candle Seed skipped:"
-                " WebSocket unavailable"
+        latest_ts = pd.Timestamp(
+            self.live_data_5m.index[-1]
+        ).tz_convert(
+            "UTC"
+        )
+
+        # -----------------------------------------------------
+        # Builder already has a newer/equal candle
+        # -----------------------------------------------------
+
+        current = (
+            builder.get_current_candle()
+        )
+
+        if current is not None:
+
+            current_ts = pd.Timestamp(
+                current.timestamp
+            ).tz_convert(
+                "UTC"
             )
 
-            return False
+            if current_ts >= latest_ts:
+
+                self._live_candle_seed_timestamp = (
+                    current_ts
+                )
+
+                return True
+
+        # -----------------------------------------------------
+        # Seed builder from REST candle
+        # -----------------------------------------------------
 
         try:
-
-            builder = (
-                self.websocket.candle_builder
-            )
-
-        except Exception:
-
-            traceback.print_exc()
-
-            return False
-
-        if builder is None:
-
-            print(
-                "Live Candle Seed skipped:"
-                " CandleBuilder unavailable"
-            )
-
-            return False
-
-        try:
-
-            latest_ts = pd.Timestamp(
-                self.live_data_5m.index[-1]
-            )
-
-            if latest_ts.tzinfo is None:
-
-                latest_ts = (
-                    latest_ts.tz_localize(
-                        "UTC"
-                    )
-                )
-
-            else:
-
-                latest_ts = (
-                    latest_ts.tz_convert(
-                        "UTC"
-                    )
-                )
-
-            # ==================================================
-            # Check current builder candle
-            # ==================================================
-
-            current_candle = (
-                builder.get_current_candle()
-            )
-
-            if current_candle is not None:
-
-                current_ts = pd.Timestamp(
-                    current_candle.timestamp
-                )
-
-                if current_ts.tzinfo is None:
-
-                    current_ts = (
-                        current_ts.tz_localize(
-                            "UTC"
-                        )
-                    )
-
-                else:
-
-                    current_ts = (
-                        current_ts.tz_convert(
-                            "UTC"
-                        )
-                    )
-
-                # --------------------------------------------------
-                # Same active candle
-                # --------------------------------------------------
-
-                if current_ts == latest_ts:
-
-                    self._live_candle_seed_timestamp = (
-                        current_ts
-                    )
-
-                    print(
-                        "\nLive Candle Seed skipped."
-                    )
-
-                    print(
-                        "Reason : Active candle already synchronized."
-                    )
-
-                    print(
-                        "Timestamp :",
-                        current_ts
-                    )
-
-                    return True
-
-                # --------------------------------------------------
-                # Builder is newer than historical REST data
-                #
-                # Never overwrite a newer live candle.
-                # --------------------------------------------------
-
-                if current_ts > latest_ts:
-
-                    self._live_candle_seed_timestamp = (
-                        current_ts
-                    )
-
-                    print(
-                        "\nLive Candle Seed skipped."
-                    )
-
-                    print(
-                        "Reason : Live candle is newer than REST data."
-                    )
-
-                    print(
-                        "Live Timestamp       :",
-                        current_ts
-                    )
-
-                    print(
-                        "Historical Timestamp :",
-                        latest_ts
-                    )
-
-                    return True
-
-            # ==================================================
-            # Build Candle from latest historical row
-            # ==================================================
-
-            row = (
-                self.live_data_5m.iloc[-1]
-            )
 
             from providers.live_candle_builder import Candle
 
-            historical_candle = Candle(
-
-                timestamp=latest_ts.to_pydatetime(),
-
-                open=float(
-                    row["Open"]
-                ),
-
-                high=float(
-                    row["High"]
-                ),
-
-                low=float(
-                    row["Low"]
-                ),
-
-                close=float(
-                    row["Close"]
-                ),
-
-                volume=float(
-                    row.get(
-                        "Volume",
-                        0.0
-                    )
-                ),
-            )
-
-            # ==================================================
-            # Seed
-            # ==================================================
+            row = self.live_data_5m.iloc[-1]
 
             seeded = (
                 builder.seed_current_candle(
-                    historical_candle
+                    Candle(
+                        timestamp=(
+                            latest_ts
+                            .to_pydatetime()
+                        ),
+                        open=float(
+                            row["Open"]
+                        ),
+                        high=float(
+                            row["High"]
+                        ),
+                        low=float(
+                            row["Low"]
+                        ),
+                        close=float(
+                            row["Close"]
+                        ),
+                        volume=float(
+                            row.get(
+                                "Volume",
+                                0.0
+                            )
+                        ),
+                    )
                 )
             )
 
@@ -1134,60 +1412,7 @@ class Controller:
                     latest_ts
                 )
 
-                print(
-                    "\n========== HISTORICAL → LIVE SYNC =========="
-                )
-
-                print(
-                    "Timeframe :",
-                    self.timeframe
-                )
-
-                print(
-                    "Timestamp :",
-                    latest_ts
-                )
-
-                print(
-                    "Open      :",
-                    historical_candle.open
-                )
-
-                print(
-                    "High      :",
-                    historical_candle.high
-                )
-
-                print(
-                    "Low       :",
-                    historical_candle.low
-                )
-
-                print(
-                    "Close     :",
-                    historical_candle.close
-                )
-
-                print(
-                    "Volume    :",
-                    historical_candle.volume
-                )
-
-                print(
-                    "Status    : SEEDED"
-                )
-
-                print(
-                    "============================================\n"
-                )
-
-                return True
-
-            print(
-                "Historical → Live candle seed failed"
-            )
-
-            return False
+            return seeded
 
         except Exception:
 
@@ -1195,165 +1420,52 @@ class Controller:
 
             return False
 
-    # ======================================================
-    # Chart Synchronization
-    # ======================================================
+    # =========================================================
+    # CHART
+    # =========================================================
 
     def _sync_chart(self):
 
-        if self.chart_widget is None:
-
-            print(
-                "Chart Sync skipped: "
-                "ChartWidget not attached"
-            )
-
-            return
-
-        if self.live_data_5m is None:
-
-            print(
-                "Chart Sync skipped: "
-                "No live data"
-            )
+        if (
+            self.chart_widget is None
+            or
+            self.live_data_5m is None
+            or
+            self.live_data_5m.empty
+        ):
 
             return
 
         try:
 
-            if self.live_data_5m.empty:
-
-                return
-
-            # ==================================================
-            # Latest historical candle
-            # ==================================================
-
-            latest_timestamp = (
+            latest = pd.Timestamp(
                 self.live_data_5m.index[-1]
             )
 
-            latest_timestamp = pd.Timestamp(
-                latest_timestamp
-            )
+            reload_needed = (
 
-            # ==================================================
-            # Determine whether historical data REALLY needs
-            # to be sent to the chart.
-            # ==================================================
-
-            timeframe_changed = (
-
-                self._chart_loaded_timeframe
-                != self.timeframe
-
-            )
-
-            symbol_changed = (
-
-                self._chart_loaded_symbol
-                != self.symbol
-
-            )
-
-            first_chart_load = not (
-                self._chart_data_loaded
-            )
-
-            should_reload_chart = (
-
-                first_chart_load
-
-                or
-
-                timeframe_changed
-
-                or
-
-                symbol_changed
+                not self._chart_data_loaded
 
                 or
 
                 self._force_chart_reload
 
+                or
+
+                self._chart_loaded_symbol
+                != self.symbol
+
+                or
+
+                self._chart_loaded_timeframe
+                != self.timeframe
             )
 
-            # ==================================================
-            # IMPORTANT
-            #
-            # Latest candle updates alone do NOT reload the
-            # complete chart.
-            #
-            # Live candle callback handles those updates.
-            # ==================================================
-
-            if should_reload_chart:
-
-                print(
-                    "\n========== CHART HISTORICAL LOAD =========="
-                )
-
-                print(
-                    "Reason:"
-                )
-
-                if first_chart_load:
-
-                    print(
-                        " - First chart load"
-                    )
-
-                if timeframe_changed:
-
-                    print(
-                        " - Timeframe changed"
-                    )
-
-                if symbol_changed:
-
-                    print(
-                        " - Symbol changed"
-                    )
-
-                if self._force_chart_reload:
-
-                    print(
-                        " - Forced chart reload"
-                    )
-
-                print(
-                    "Symbol    :",
-                    self.symbol
-                )
-
-                print(
-                    "Timeframe :",
-                    self.timeframe
-                )
-
-                print(
-                    "Candles   :",
-                    len(
-                        self.live_data_5m
-                    )
-                )
-
-                print(
-                    "Latest    :",
-                    latest_timestamp
-                )
-
-                print(
-                    "============================================"
-                )
+            if reload_needed:
 
                 self.chart_widget.set_chart_data(
                     self.live_data_5m
                 )
-
-                # --------------------------------------------------
-                # Register chart state
-                # --------------------------------------------------
 
                 self._chart_data_loaded = True
 
@@ -1366,28 +1478,10 @@ class Controller:
                 )
 
                 self._chart_loaded_last_timestamp = (
-                    latest_timestamp
+                    latest
                 )
 
                 self._force_chart_reload = False
-
-            else:
-
-                print(
-                    "\nChart historical reload skipped."
-                )
-
-                print(
-                    "Reason : Existing chart dataset is valid."
-                )
-
-                print(
-                    "Chart remains untouched."
-                )
-
-            # ==================================================
-            # Trade Overlay
-            # ==================================================
 
             self._sync_trade_overlay()
 
@@ -1395,14 +1489,13 @@ class Controller:
 
             traceback.print_exc()
 
-    # ======================================================
-    # Trade Overlay
-    # ======================================================
+    # =========================================================
+    # TRADE OVERLAY
+    # =========================================================
 
     def _sync_trade_overlay(self):
 
         if self.chart_widget is None:
-
             return
 
         try:
@@ -1410,87 +1503,205 @@ class Controller:
             result = self.latest_result
 
             if (
-
                 result.get(
                     "trade_status"
-                )
-                == "READY"
+                ) == "READY"
 
                 and
 
                 result.get(
                     "trade_direction"
+                ) in (
+                    "BUY",
+                    "SELL",
                 )
-                in ["BUY", "SELL"]
 
+                and
+
+                self.live_data_5m is not None
+
+                and
+
+                not self.live_data_5m.empty
             ):
 
-                if (
-                    self.live_data_5m is None
-                    or
-                    len(self.live_data_5m) == 0
-                ):
-
-                    return
-
-                timestamp = (
+                ts = (
                     self.live_data_5m.index[-1]
                 )
 
-                signal_overlay = {
+                self.chart_widget.show_trade_signal({
 
                     "time":
                         int(
-                            timestamp.timestamp()
+                            pd.Timestamp(
+                                ts
+                            ).timestamp()
                         ),
 
                     "direction":
                         result[
                             "trade_direction"
                         ],
-
-                }
-
-                self.chart_widget.show_trade_signal(
-                    signal_overlay
-                )
+                })
 
         except Exception:
 
             traceback.print_exc()
 
-    # ======================================================
-    # Force Chart Reload
-    # ======================================================
+    # =========================================================
+    # FORCE CHART RELOAD
+    # =========================================================
 
     def force_chart_reload(self):
-
-        print(
-            "\nFORCING CHART HISTORICAL RELOAD"
-        )
 
         self._force_chart_reload = True
 
         self._chart_data_loaded = False
 
-        self._chart_loaded_symbol = None
-
-        self._chart_loaded_timeframe = None
-
-        self._chart_loaded_last_timestamp = None
-
         self._sync_chart()
 
-    # ======================================================
-    # Live Tick Callback
-    # ======================================================
+    # =========================================================
+    # SPOT COMPATIBILITY CALLBACKS
+    # =========================================================
 
     def on_live_tick(
         self,
         tick
     ):
 
+        # Spot is compatibility-only.
+        # NEVER change current_price here.
+
         self.last_tick = tick
+
+    def on_live_candle(
+        self,
+        candle
+    ):
+
+        return
+
+    def on_candle_closed(
+        self,
+        candle
+    ):
+
+        return
+
+    # =========================================================
+    # FUTURES TICK PARSER
+    # =========================================================
+
+    def _extract_futures_tick(
+        self,
+        tick
+    ):
+
+        if not isinstance(
+            tick,
+            dict
+        ):
+
+            return None, None
+
+        # -----------------------------------------------------
+        # Price candidates
+        # -----------------------------------------------------
+
+        price_keys = (
+            "p",
+            "price",
+            "last_price",
+            "lastPrice",
+            "P",
+            "close",
+            "Close",
+        )
+
+        price = None
+
+        for key in price_keys:
+
+            value = tick.get(key)
+
+            if value is not None:
+
+                try:
+
+                    value = float(value)
+
+                    if value > 0:
+
+                        price = value
+
+                        break
+
+                except Exception:
+
+                    continue
+
+        # -----------------------------------------------------
+        # Timestamp candidates
+        # -----------------------------------------------------
+
+        timestamp_keys = (
+            "T",
+            "timestamp",
+            "ts",
+            "time",
+            "event_time",
+        )
+
+        timestamp = None
+
+        for key in timestamp_keys:
+
+            value = tick.get(key)
+
+            if value is not None:
+
+                try:
+
+                    timestamp = float(
+                        value
+                    )
+
+                    break
+
+                except Exception:
+
+                    continue
+
+        return price, timestamp
+
+    # =========================================================
+    # AUTHORITATIVE FUTURES TICK
+    # =========================================================
+
+    def on_futures_live_tick(
+        self,
+        tick
+    ):
+
+        """
+        LOW-LATENCY FUTURES PRICE AUTHORITY.
+
+        This function intentionally does NOT perform:
+
+            REST
+            AI analysis
+            DataFrame merge
+            chart rendering
+            heavy logging
+
+        Its job is:
+
+            WebSocket tick
+                ↓
+            validate
+                ↓
+            current_price
+        """
 
         if not isinstance(
             tick,
@@ -1501,53 +1712,224 @@ class Controller:
 
         try:
 
-            price = tick.get(
-                "price",
-                tick.get("p")
+            price, timestamp = (
+                self._extract_futures_tick(
+                    tick
+                )
             )
 
-            if price is not None:
+            if price is None:
 
-                self.current_price = float(
-                    price
+                return
+
+            # -------------------------------------------------
+            # Timestamp normalization
+            # -------------------------------------------------
+
+            normalized_ts = None
+
+            if timestamp is not None:
+
+                value = float(
+                    timestamp
                 )
+
+                # Milliseconds -> seconds
+                if value > 10_000_000_000:
+
+                    value /= 1000.0
+
+                normalized_ts = (
+                    pd.Timestamp.fromtimestamp(
+                        value,
+                        tz="UTC"
+                    )
+                )
+
+            # -------------------------------------------------
+            # OLD TICK PROTECTION
+            #
+            # Only reject when timestamp exists.
+            # -------------------------------------------------
+
+            if (
+                normalized_ts is not None
+                and
+                self._last_futures_tick_timestamp
+                is not None
+                and
+                normalized_ts
+                <
+                self._last_futures_tick_timestamp
+            ):
+
+                return
+
+            if normalized_ts is not None:
+
+                self._last_futures_tick_timestamp = (
+                    normalized_ts
+                )
+
+            # =================================================
+            # AUTHORITATIVE FUTURES PRICE
+            # =================================================
+
+            self._last_futures_ws_price = (
+                price
+            )
+
+            self._futures_live_price_initialized = (
+                True
+            )
+
+            self.current_price = (
+                price
+            )
+
+            self.last_tick = (
+                tick
+            )
+
+            # =================================================
+            # LIGHTWEIGHT DASHBOARD UPDATE
+            # =================================================
+
+            if self.dashboard is not None:
+
+                try:
+
+                    updater = getattr(
+                        self.dashboard,
+                        "update_futures_live_price",
+                        None
+                    )
+
+                    if callable(updater):
+
+                        updater(
+                            price,
+                            source="Futures WebSocket",
+                        )
+
+                except Exception:
+
+                    # UI failure must NEVER kill
+                    # the Futures price path.
+
+                    pass
 
         except Exception:
 
-            traceback.print_exc()
+            # Absolute rule:
+            # live price callback must never crash
+            # the WebSocket worker.
 
-    # ======================================================
-    # Live Candle Callback
-    # ======================================================
+            pass
 
-    def on_live_candle(
+    # =========================================================
+    # COMPATIBILITY FUTURES PRICE CALLBACK
+    # =========================================================
+
+    def on_futures_price(
+        self,
+        price
+    ):
+
+        try:
+
+            price = float(
+                price
+            )
+
+            if price <= 0:
+                return
+
+            self._last_futures_ws_price = (
+                price
+            )
+
+            self._futures_live_price_initialized = (
+                True
+            )
+
+            self.current_price = (
+                price
+            )
+
+        except Exception:
+
+            pass
+
+    # =========================================================
+    # AUTHORITATIVE LIVE CANDLE
+    # =========================================================
+
+    def on_futures_live_candle(
         self,
         candle
     ):
 
-        """
-        Called by LiveCandleBuilder whenever the active
-        candle changes.
+        if candle is None:
+            return
 
-        This method performs TWO synchronizations:
-
-        1. Controller working DataFrame
-        2. TradingView chart
-
-        It NEVER calls set_chart_data().
-
-        Therefore live ticks cannot reset chart zoom/history.
-        """
+        # -----------------------------------------------------
+        # Save latest candle
+        # -----------------------------------------------------
 
         self.last_candle = candle
 
-        if candle is None:
+        # =====================================================
+        # 1. PRICE FALLBACK
+        #
+        # Only use candle close if no Futures tick has ever
+        # arrived.
+        # =====================================================
 
-            return
+        if not self._has_futures_websocket_price():
 
-        # ==================================================
-        # Merge active live candle into working DataFrame
-        # ==================================================
+            try:
+
+                close_price = float(
+                    candle.close
+                )
+
+                if close_price > 0:
+
+                    self.current_price = (
+                        close_price
+                    )
+
+            except Exception:
+
+                pass
+
+        # =====================================================
+        # 2. CHART LIVE UPDATE
+        #
+        # Chart gets the candle immediately.
+        #
+        # Do NOT wait for AI analysis.
+        # =====================================================
+
+        if self.chart_widget is not None:
+
+            try:
+
+                self.chart_widget.update_last_candle(
+                    candle
+                )
+
+            except Exception:
+
+                # Chart failure must not stop
+                # candle/data processing.
+
+                traceback.print_exc()
+
+        # =====================================================
+        # 3. MERGE INTO LIVE DATA
+        # =====================================================
 
         try:
 
@@ -1559,200 +1941,149 @@ class Controller:
 
             traceback.print_exc()
 
-        # ==================================================
-        # Chart Update
-        # ==================================================
-
-        if self.chart_widget is None:
-
-            return
-
-        try:
-
-            self.chart_widget.update_last_candle(
-                candle
-            )
-
-        except Exception:
-
-            traceback.print_exc()
-
-    # ======================================================
-    # Merge Active Live Candle
-    # ======================================================
+    # =========================================================
+    # MERGE LIVE CANDLE
+    # =========================================================
 
     def _merge_live_candle(
         self,
         candle
     ):
 
-        """
-        Merge the CURRENT active candle into live_data_5m.
-
-        This is different from _merge_closed_candle().
-
-        Current candle:
-            continuously updated
-
-        Closed candle:
-            finalized and processed by AI
-        """
-
         if self.live_data_5m is None:
 
-            print(
-                "Live Candle Merge skipped:"
-                " live_data_5m is None"
-            )
-
             return False
 
-        ts, row = (
-            self._candle_to_row(
-                candle
-            )
+        # -----------------------------------------------------
+        # Normalize timestamp
+        # -----------------------------------------------------
+
+        ts = pd.Timestamp(
+            candle.timestamp
         )
 
-        if ts is None or row is None:
+        if ts.tzinfo is None:
 
-            return False
-
-        try:
-
-            df = (
-                self._normalize_dataframe(
-                    self.live_data_5m
-                )
+            ts = ts.tz_localize(
+                "UTC"
             )
 
-            columns = [
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-            ]
+        else:
 
-            # ==================================================
-            # Existing active candle
-            # ==================================================
+            ts = ts.tz_convert(
+                "UTC"
+            )
 
-            if ts in df.index:
+        # -----------------------------------------------------
+        # Candle row
+        # -----------------------------------------------------
 
-                for column in columns:
+        row = {
 
-                    df.loc[
-                        ts,
-                        column
-                    ] = row[column]
+            "Open":
+                float(candle.open),
 
-                print(
-                    "LIVE CANDLE UPDATED :",
+            "High":
+                float(candle.high),
+
+            "Low":
+                float(candle.low),
+
+            "Close":
+                float(candle.close),
+
+            "Volume":
+                float(candle.volume),
+        }
+
+        # -----------------------------------------------------
+        # Normalize existing data
+        # -----------------------------------------------------
+
+        df = self._normalize_dataframe(
+            self.live_data_5m
+        )
+
+        # -----------------------------------------------------
+        # Update existing candle
+        # -----------------------------------------------------
+
+        if ts in df.index:
+
+            for col, value in row.items():
+
+                df.loc[
                     ts,
-                    "| Close :",
-                    row["Close"]
-                )
+                    col
+                ] = value
 
-            # ==================================================
-            # New live candle
-            # ==================================================
+        # -----------------------------------------------------
+        # Add new candle
+        # -----------------------------------------------------
 
-            else:
+        else:
 
-                print(
-                    "\nNEW LIVE CANDLE APPENDED :",
-                    ts
-                )
+            new_row = pd.DataFrame(
+                [row],
+                index=[ts]
+            )
 
-                new_row = pd.DataFrame(
-                    [row],
-                    index=pd.DatetimeIndex(
-                        [ts]
-                    )
-                )
-
-                new_row.index.name = (
-                    df.index.name
-                )
-
-                df = pd.concat(
-                    [
-                        df,
-                        new_row
-                    ]
-                )
-
-            # ==================================================
-            # Sort
-            # ==================================================
-
-            df = df.sort_index()
-
-            # ==================================================
-            # Duplicate protection
-            # ==================================================
-
-            df = (
-                df[
-                    ~df.index.duplicated(
-                        keep="last"
-                    )
+            df = pd.concat(
+                [
+                    df,
+                    new_row,
                 ]
             )
 
-            # ==================================================
-            # History limit
-            # ==================================================
+        # -----------------------------------------------------
+        # Sort
+        # -----------------------------------------------------
 
-            df = (
-                self._limit_dataframe_history(
-                    df
-                )
+        df = df.sort_index()
+
+        # -----------------------------------------------------
+        # Remove duplicate timestamps
+        # -----------------------------------------------------
+
+        df = df[
+            ~df.index.duplicated(
+                keep="last"
             )
+        ]
 
-            self.live_data_5m = df
+        # -----------------------------------------------------
+        # History limit
+        # -----------------------------------------------------
 
-            return True
+        self.live_data_5m = (
+            self._limit_dataframe_history(
+                df
+            )
+        )
 
-        except Exception:
+        return True
 
-            traceback.print_exc()
+    # =========================================================
+    # CLOSED FUTURES CANDLE
+    # =========================================================
 
-            return False
-
-    # ======================================================
-    # Normalize Candle Timestamp
-    # ======================================================
-
-    def _normalize_candle_timestamp(
+    def on_futures_candle_closed(
         self,
         candle
     ):
 
-        timestamp = getattr(
-            candle,
-            "timestamp",
-            None
-        )
-
-        if timestamp is None:
-
-            return None
+        if candle is None:
+            return
 
         try:
 
-            ts = pd.Timestamp(
-                timestamp
-            )
+            # -------------------------------------------------
+            # Normalize timestamp
+            # -------------------------------------------------
 
-            # --------------------------------------------------
-            # Naive → UTC
-            #
-            # LiveCandleBuilder already normalizes timestamps
-            # to UTC.
-            #
-            # Using UTC here avoids accidental India/UTC shift.
-            # --------------------------------------------------
+            ts = pd.Timestamp(
+                candle.timestamp
+            )
 
             if ts.tzinfo is None:
 
@@ -1760,563 +2091,64 @@ class Controller:
                     "UTC"
                 )
 
-            # --------------------------------------------------
-            # Convert → UTC
-            # --------------------------------------------------
-
-            ts = ts.tz_convert(
-                "UTC"
-            )
-
-            return ts
-
-        except Exception:
-
-            traceback.print_exc()
-
-            return None
-
-    # ======================================================
-    # Candle → DataFrame Row
-    # ======================================================
-
-    def _candle_to_row(
-        self,
-        candle
-    ):
-
-        ts = (
-            self._normalize_candle_timestamp(
-                candle
-            )
-        )
-
-        if ts is None:
-
-            return None, None
-
-        try:
-
-            row = {
-
-                "Open":
-                    float(
-                        candle.open
-                    ),
-
-                "High":
-                    float(
-                        candle.high
-                    ),
-
-                "Low":
-                    float(
-                        candle.low
-                    ),
-
-                "Close":
-                    float(
-                        candle.close
-                    ),
-
-                "Volume":
-                    float(
-                        candle.volume
-                    ),
-
-            }
-
-            return ts, row
-
-        except Exception:
-
-            traceback.print_exc()
-
-            return None, None
-
-    # ======================================================
-    # Merge Closed Candle
-    # ======================================================
-
-    def _merge_closed_candle(
-        self,
-        candle
-    ):
-
-        if self.live_data_5m is None:
-
-            print(
-                "Cannot merge candle:"
-                " live_data_5m is None"
-            )
-
-            return False
-
-        ts, row = (
-            self._candle_to_row(
-                candle
-            )
-        )
-
-        if ts is None or row is None:
-
-            print(
-                "Cannot merge candle:"
-                " Invalid candle data"
-            )
-
-            return False
-
-        try:
-
-            df = (
-                self._normalize_dataframe(
-                    self.live_data_5m
-                )
-            )
-
-            columns = [
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-            ]
-
-            # --------------------------------------------------
-            # Existing Candle
-            # --------------------------------------------------
-
-            if ts in df.index:
-
-                print(
-                    "Closed Candle Existing:"
-                    " Updating candle"
-                )
-
-                for column in columns:
-
-                    df.loc[
-                        ts,
-                        column
-                    ] = row[column]
-
-            # --------------------------------------------------
-            # New Candle
-            # --------------------------------------------------
-
             else:
 
-                print(
-                    "Closed Candle New:"
-                    " Appending candle"
+                ts = ts.tz_convert(
+                    "UTC"
                 )
 
-                new_row = pd.DataFrame(
-                    [row],
-                    index=pd.DatetimeIndex(
-                        [ts]
-                    )
-                )
+            # -------------------------------------------------
+            # Duplicate closed candle protection
+            # -------------------------------------------------
 
-                new_row.index.name = (
-                    df.index.name
-                )
+            if (
+                self.last_processed_closed_time
+                is not None
+                and
+                ts
+                <=
+                self.last_processed_closed_time
+            ):
 
-                df = pd.concat(
-                    [
-                        df,
-                        new_row
-                    ]
-                )
+                return
 
-            # --------------------------------------------------
-            # Sort
-            # --------------------------------------------------
+            # -------------------------------------------------
+            # Merge final candle
+            # -------------------------------------------------
 
-            df = df.sort_index()
+            if not self._merge_live_candle(
+                candle
+            ):
 
-            # --------------------------------------------------
-            # Remove Duplicate Timestamp
-            # --------------------------------------------------
+                return
 
-            df = (
-                df[
-                    ~df.index.duplicated(
-                        keep="last"
-                    )
-                ]
-            )
+            # -------------------------------------------------
+            # Mark processed
+            # -------------------------------------------------
 
-            # --------------------------------------------------
-            # Limit History
-            # --------------------------------------------------
-
-            df = (
-                self._limit_dataframe_history(
-                    df
-                )
-            )
-
-            self.live_data_5m = df
-
-            print(
-                "\n========== LIVE DATA MERGE =========="
-            )
-
-            print(
-                "Merged Candle UTC :",
+            self.last_processed_closed_time = (
                 ts
             )
 
-            print(
-                "Rows              :",
-                len(df)
-            )
+            # -------------------------------------------------
+            # Price fallback
+            # -------------------------------------------------
 
-            print(
-                "Latest Close      :",
-                df.iloc[-1]["Close"]
-            )
+            if not self._has_futures_websocket_price():
 
-            print(
-                "Latest Timestamp  :",
-                df.index[-1]
-            )
+                try:
 
-            print(
-                "======================================\n"
-            )
+                    self.current_price = float(
+                        candle.close
+                    )
 
-            return True
+                except Exception:
 
-        except Exception:
+                    pass
 
-            traceback.print_exc()
-
-            return False
-
-    # ======================================================
-    # Closed Candle AI
-    # ======================================================
-
-    def _run_closed_candle_analysis(
-        self,
-        candle
-    ):
-
-        if not ControllerConfig.ENABLE_CLOSED_CANDLE_ANALYSIS:
-
-            print(
-                "Closed Candle AI Analysis Disabled"
-            )
-
-            return None
-
-        if self.live_data_5m is None:
-
-            print(
-                "AI Analysis skipped:"
-                " live_data_5m is None"
-            )
-
-            return None
-
-        if self.live_data_15m is None:
-
-            print(
-                "AI Analysis skipped:"
-                " live_data_15m is None"
-            )
-
-            return None
-
-        try:
-
-            print(
-                "\n" + "=" * 60
-            )
-
-            print(
-                "V20.7 CLOSED CANDLE AI ANALYSIS"
-            )
-
-            print(
-                "=" * 60
-            )
-
-            print(
-                "Time      :",
-                candle.timestamp
-            )
-
-            print(
-                "5m Candle :",
-                self.live_data_5m.index[-1]
-            )
-
-            print(
-                "Close     :",
-                self.live_data_5m.iloc[-1]["Close"]
-            )
-
-            # ==================================================
-            # Signal Engine
-            # ==================================================
-
-            print(
-                "Running SignalEngine..."
-            )
-
-            signal = (
-                self.signal_engine.generate_signal(
-                    self.live_data_5m,
-                    self.live_data_15m
-                )
-            )
-
-            self.latest_signal = signal
-
-            # ==================================================
-            # Trade Manager
-            # ==================================================
-
-            print(
-                "Running TradeManager..."
-            )
-
-            trade = (
-                self.trade_manager.generate_trade(
-                    signal,
-                    self.live_data_5m
-                )
-            )
-
-            self.latest_trade = trade
-
-            # ==================================================
-            # Build Result
-            # ==================================================
-
-            result = self._build_result(
-                signal=signal,
-                trade=trade
-            )
-
-            self.latest_result = result
-
-            self.last_refresh = (
-                result["last_refresh"]
-            )
-
-            # ==================================================
-            # Trade Overlay
-            # ==================================================
-
-            self._sync_trade_overlay()
-
-            # ==================================================
-            # Final Debug
-            # ==================================================
-
-            print(
-                "\n========== CLOSED CANDLE RESULT =========="
-            )
-
-            print(
-                "Signal     :",
-                result.get(
-                    "signal"
-                )
-            )
-
-            print(
-                "Confidence :",
-                result.get(
-                    "confidence"
-                )
-            )
-
-            print(
-                "Quality    :",
-                result.get(
-                    "quality"
-                )
-            )
-
-            print(
-                "Status     :",
-                result.get(
-                    "status"
-                )
-            )
-
-            print(
-                "Trade      :",
-                result.get(
-                    "trade_status"
-                )
-            )
-
-            print(
-                "Direction  :",
-                result.get(
-                    "trade_direction"
-                )
-            )
-
-            print(
-                "===========================================\n"
-            )
-
-            return result
-
-        except Exception:
-
-            traceback.print_exc()
-
-            return None
-
-    # ======================================================
-    # Closed Candle Callback
-    # ======================================================
-
-    def on_candle_closed(
-        self,
-        candle
-    ):
-
-        try:
-
-            print(
-                "\n" + "=" * 60
-            )
-
-            print(
-                "V20.7 CANDLE CLOSED"
-            )
-
-            print(
-                "=" * 60
-            )
-
-            print(
-                "Time   :",
-                candle.timestamp
-            )
-
-            print(
-                "Open   :",
-                candle.open
-            )
-
-            print(
-                "High   :",
-                candle.high
-            )
-
-            print(
-                "Low    :",
-                candle.low
-            )
-
-            print(
-                "Close  :",
-                candle.close
-            )
-
-            print(
-                "Volume :",
-                candle.volume
-            )
-
-            print(
-                "=" * 60
-            )
-
-            # ==================================================
-            # Store
-            # ==================================================
-
-            self.last_candle = candle
-
-            # ==================================================
-            # Normalize Timestamp
-            # ==================================================
-
-            closed_ts = (
-                self._normalize_candle_timestamp(
-                    candle
-                )
-            )
-
-            if closed_ts is None:
-
-                print(
-                    "Closed Candle rejected:"
-                    " Invalid timestamp"
-                )
-
-                return
-
-            print(
-                "Normalized Closed Time :",
-                closed_ts
-            )
-
-            # ==================================================
-            # Duplicate Protection
-            # ==================================================
-
-            if (
-
-                self.last_processed_closed_time
-                is not None
-
-                and
-
-                closed_ts
-                <=
-                self.last_processed_closed_time
-
-            ):
-
-                print(
-                    "CLOSED CANDLE IGNORED:"
-                    " Already processed"
-                )
-
-                return
-
-            # ==================================================
-            # Merge
-            # ==================================================
-
-            merged = (
-                self._merge_closed_candle(
-                    candle
-                )
-            )
-
-            if not merged:
-
-                print(
-                    "Closed Candle merge failed"
-                )
-
-                return
-
-            # ==================================================
-            # Mark Processed
-            # ==================================================
-
-            self.last_processed_closed_time = (
-                closed_ts
-            )
-
-            # ==================================================
-            # Run AI
-            # ==================================================
+            # -------------------------------------------------
+            # CLOSED CANDLE ANALYSIS
+            # -------------------------------------------------
 
             self._run_closed_candle_analysis(
                 candle
@@ -2326,29 +2158,114 @@ class Controller:
 
             traceback.print_exc()
 
-    # ======================================================
-    # Health Report
-    # ======================================================
+    # =========================================================
+    # CLOSED CANDLE ANALYSIS
+    # =========================================================
 
-    def health_report(
-        self
+    def _run_closed_candle_analysis(
+        self,
+        candle
     ):
 
-        current_builder_candle = None
+        if not ControllerConfig.ENABLE_CLOSED_CANDLE_ANALYSIS:
+
+            return None
+
+        if (
+            self.live_data_5m is None
+            or
+            self.live_data_15m is None
+        ):
+
+            return None
 
         try:
 
-            if self.websocket:
+            # -------------------------------------------------
+            # Signal
+            # -------------------------------------------------
 
-                current_builder_candle = (
-                    self.websocket
-                    .candle_builder
-                    .get_current_candle()
+            signal = (
+                self.signal_engine.generate_signal(
+                    self.live_data_5m,
+                    self.live_data_15m,
                 )
+            )
+
+            self.latest_signal = (
+                signal
+            )
+
+            # -------------------------------------------------
+            # Trade
+            # -------------------------------------------------
+
+            trade = (
+                self.trade_manager.generate_trade(
+                    signal,
+                    self.live_data_5m,
+                )
+            )
+
+            self.latest_trade = (
+                trade
+            )
+
+            # -------------------------------------------------
+            # Result
+            # -------------------------------------------------
+
+            result = (
+                self._build_result(
+                    signal,
+                    trade,
+                )
+            )
+
+            self.latest_result = (
+                result
+            )
+
+            self.last_refresh = (
+                result[
+                    "last_refresh"
+                ]
+            )
+
+            # -------------------------------------------------
+            # Overlay
+            # -------------------------------------------------
+
+            self._sync_trade_overlay()
+
+            return result
 
         except Exception:
 
-            current_builder_candle = None
+            traceback.print_exc()
+
+            return None
+
+    # =========================================================
+    # HEALTH REPORT
+    # =========================================================
+
+    def health_report(self):
+
+        futures_ws = {}
+
+        if self.futures_websocket:
+
+            try:
+
+                futures_ws = (
+                    self.futures_websocket
+                    .health_report()
+                )
+
+            except Exception:
+
+                pass
 
         return {
 
@@ -2361,57 +2278,80 @@ class Controller:
             "higher_timeframe":
                 self.higher_timeframe,
 
-            "provider":
+            "futures_provider":
                 (
                     type(
-                        self.provider
+                        self.futures_provider
                     ).__name__
-                    if self.provider
+                    if self.futures_provider
                     else None
                 ),
 
-            "websocket_running":
+            "futures_symbol":
                 (
-                    self.websocket.is_running()
-                    if self.websocket
+                    self.futures_provider.symbol
+                    if self.futures_provider
+                    else None
+                ),
+
+            "futures_connected":
+                (
+                    self.futures_provider.connected
+                    if self.futures_provider
                     else False
                 ),
 
-            "websocket_connected":
-                (
-                    self.websocket.is_connected()
-                    if self.websocket
-                    else False
-                ),
-
-            "live_price":
+            "futures_live_price":
                 self.current_price,
 
-            "last_refresh":
-                self.last_refresh,
+            "futures_live_price_source":
+                (
+                    "WEBSOCKET"
+                    if
+                    self._has_futures_websocket_price()
+                    else
+                    "REST_BOOTSTRAP_OR_EXISTING_STATE"
+                ),
 
-            "last_tick":
-                self.last_tick,
+            "futures_ws_live_price":
+                self._last_futures_ws_price,
 
-            "last_candle":
-                self.last_candle,
+            "futures_ws_price_initialized":
+                self._futures_live_price_initialized,
 
-            "live_builder_current_candle":
-                current_builder_candle,
+            "last_futures_tick_timestamp":
+                self._last_futures_tick_timestamp,
 
-            "live_candle_seed_timestamp":
-                self._live_candle_seed_timestamp,
+            "futures_websocket_running":
+                (
+                    self.futures_websocket.is_running()
+                    if self.futures_websocket
+                    else False
+                ),
 
-            "last_processed_closed_time":
-                self.last_processed_closed_time,
+            "futures_websocket_connected":
+                (
+                    self.futures_websocket.is_connected()
+                    if self.futures_websocket
+                    else False
+                ),
+
+            "futures_websocket_healthy":
+                (
+                    self.futures_websocket.is_connection_healthy()
+                    if self.futures_websocket
+                    else False
+                ),
+
+            "futures_websocket_health":
+                futures_ws,
 
             "live_data_5m_rows":
                 (
                     len(
                         self.live_data_5m
                     )
-                    if self.live_data_5m
-                    is not None
+                    if self.live_data_5m is not None
                     else 0
                 ),
 
@@ -2420,8 +2360,7 @@ class Controller:
                     len(
                         self.live_data_15m
                     )
-                    if self.live_data_15m
-                    is not None
+                    if self.live_data_15m is not None
                     else 0
                 ),
 
@@ -2439,29 +2378,20 @@ class Controller:
 
             "chart_force_reload":
                 self._force_chart_reload,
-
         }
 
-    # ======================================================
-    # Log Health
-    # ======================================================
+    # =========================================================
+    # HEALTH LOG
+    # =========================================================
 
-    def log_health(
-        self
-    ):
-
-        report = (
-            self.health_report()
-        )
+    def log_health(self):
 
         print(
-            "\n========== "
-            "Controller Health "
-            "=========="
+            "\n========== Controller Health =========="
         )
 
         for key, value in (
-            report.items()
+            self.health_report().items()
         ):
 
             print(
@@ -2472,73 +2402,19 @@ class Controller:
             "=======================================\n"
         )
 
-    # ======================================================
-    # Signal Debug
-    # ======================================================
+    # =========================================================
+    # SHUTDOWN
+    # =========================================================
 
-    def _print_signal_result(
-        self,
-        result
-    ):
+    def shutdown(self):
 
-        print(
-            "\n========== SIGNAL ENGINE REFRESH =========="
-        )
+        try:
 
-        print(
-            "Signal     :",
-            result.get(
-                "signal"
-            )
-        )
+            self.stop_futures_websocket()
 
-        print(
-            "Confidence :",
-            result.get(
-                "confidence"
-            )
-        )
+        except Exception:
 
-        print(
-            "Status     :",
-            result.get(
-                "status"
-            )
-        )
-
-        print(
-            "Trade      :",
-            result.get(
-                "trade_status"
-            )
-        )
-
-        print(
-            "Direction  :",
-            result.get(
-                "trade_direction"
-            )
-        )
-
-        print(
-            "============================================\n"
-        )
-
-    # ======================================================
-    # Shutdown
-    # ======================================================
-
-    def shutdown(
-        self
-    ):
-
-        print(
-            "\nShutting Down Controller..."
-        )
-
-        # --------------------------------------------------
-        # WebSocket
-        # --------------------------------------------------
+            traceback.print_exc()
 
         try:
 
@@ -2550,10 +2426,6 @@ class Controller:
 
             traceback.print_exc()
 
-        # --------------------------------------------------
-        # Market
-        # --------------------------------------------------
-
         try:
 
             if self.market:
@@ -2564,30 +2436,32 @@ class Controller:
 
             traceback.print_exc()
 
-        print(
-            "Controller Shutdown Complete"
-        )
+        try:
 
-    # ======================================================
-    # Representation
-    # ======================================================
+            if self.futures_provider:
 
-    def __repr__(
-        self
-    ):
+                self.futures_provider.disconnect()
+
+        except Exception:
+
+            traceback.print_exc()
+
+    # =========================================================
+    # REPRESENTATION
+    # =========================================================
+
+    def __repr__(self):
 
         return (
 
-            "Controller("
-
+            f"Controller("
             f"symbol='{self.symbol}', "
-
             f"timeframe='{self.timeframe}', "
-
             f"price={self.current_price}, "
-
-            f"websocket="
-            f"{self.websocket is not None}"
-
-            ")"
+            f"market_type='FUTURES', "
+            f"futures_provider="
+            f"{self.futures_provider is not None}, "
+            f"futures_websocket="
+            f"{self.futures_websocket is not None}"
+            f")"
         )
