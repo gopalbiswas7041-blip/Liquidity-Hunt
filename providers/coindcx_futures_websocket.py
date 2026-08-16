@@ -1,20 +1,88 @@
 """
 Liquidity Hunter AI
-CoinDCX Futures Socket.IO Engine V20.9.4
-Low-Latency Futures Tick Authority
+CoinDCX Futures WebSocket V20.9.6
+
+FUTURES AUTHORITATIVE LIVE MARKET ENGINE
 
 Architecture
 ------------
-Socket ingress
-    |
-    +--> Controller live price IMMEDIATE
-    |
-    +--> Tick queue
-            |
-            +--> Candle Builder
+
+CoinDCX Futures Socket.IO
+        |
+        v
+    new-trade
+        |
+        v
+  Normalize Tick
+        |
+        +----------------------+
+        |                      |
+        v                      v
+Controller Price        Tick Queue
+IMMEDIATE PATH               |
+                             v
+                       Candle Builder
+                             |
+                    +--------+--------+
+                    |                 |
+                    v                 v
+              Live Candle       Closed Candle
+                    |                 |
+                    v                 v
+               Controller        Controller
                     |
-                    +--> Controller live candle
-                    +--> Closed candle analysis
+                    v
+              Signal Analysis
+
+
+Authority Rules
+---------------
+
+Historical:
+    Futures REST
+
+Live Price:
+    Futures WebSocket
+
+Live Candle:
+    Futures WebSocket
+    + LiveCandleBuilder
+
+Closed Candle:
+    Futures WebSocket
+    + LiveCandleBuilder
+
+Spot WebSocket:
+    NEVER used by this engine.
+
+Important
+---------
+
+The Controller receives a valid Futures tick immediately
+before the tick enters the processing queue.
+
+This guarantees:
+
+    WebSocket Tick
+        ->
+    Controller current_price
+
+does NOT wait for candle processing.
+
+V20.9.6 goals
+-------------
+
+1. Futures WebSocket remains the only live-price authority.
+2. Controller receives each accepted tick immediately.
+3. Tick processing remains asynchronous.
+4. Candle building happens only inside the worker.
+5. Closed candle is forwarded exactly once.
+6. Duplicate ticks are rejected.
+7. Old/out-of-order ticks are rejected.
+8. Symbol changes reset live state safely.
+9. Timeframe changes reset candle state safely.
+10. Reconnection does not create duplicate callbacks.
+11. Controller/UI failures cannot kill the WebSocket worker.
 """
 
 from __future__ import annotations
@@ -26,7 +94,7 @@ import threading
 import time
 
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 import socketio
 
@@ -37,27 +105,43 @@ from providers.live_candle_builder import (
 from utils.logger import get_logger
 
 
+# ============================================================
+# FUTURES WEBSOCKET
+# ============================================================
+
 class CoinDCXFuturesWebSocket:
+
+    # ========================================================
+    # IDENTITY
+    # ========================================================
 
     PROVIDER_NAME = (
         "CoinDCX Futures WebSocket"
     )
 
-    VERSION = "V20.9.4"
+    VERSION = "V20.9.6"
 
     MARKET_TYPE = "FUTURES"
 
     EXCHANGE = "CoinDCX"
 
+    # ========================================================
+    # SOCKET CONFIG
+    # ========================================================
+
     DEFAULT_SOCKET_URL = (
         "https://stream.coindcx.com"
     )
+
+    SOCKET_CHANNEL_SUFFIX = "@trades-futures"
 
     DEFAULT_TIMEFRAME = "1m"
 
     DEFAULT_SYMBOL = "B-BTC_USDT"
 
-    SOCKET_CHANNEL_SUFFIX = "@trades"
+    # ========================================================
+    # CONNECTION CONFIG
+    # ========================================================
 
     WAIT_TIMEOUT = 20
 
@@ -67,22 +151,38 @@ class CoinDCXFuturesWebSocket:
 
     HEARTBEAT_TIMEOUT = 30
 
+    # ========================================================
+    # QUEUE CONFIG
+    # ========================================================
+
     QUEUE_SIZE = 5000
 
     QUEUE_GET_TIMEOUT = 0.5
 
-    SUPPORTED_SYMBOLS = [
+    # ========================================================
+    # SUPPORTED FUTURES
+    # ========================================================
+
+    SUPPORTED_SYMBOLS = (
         "B-BTC_USDT",
         "B-ETH_USDT",
         "B-XAU_USDT",
         "B-XAG_USDT",
-    ]
+    )
+
+    # ========================================================
+    # INIT
+    # ========================================================
 
     def __init__(
         self,
-        timeframe="1m",
-        symbol=DEFAULT_SYMBOL,
+        timeframe: str = DEFAULT_TIMEFRAME,
+        symbol: str = DEFAULT_SYMBOL,
     ):
+
+        # ----------------------------------------------------
+        # LOGGER
+        # ----------------------------------------------------
 
         self.logger = get_logger(
             self.__class__.__name__
@@ -90,9 +190,7 @@ class CoinDCXFuturesWebSocket:
 
         if not self.logger.handlers:
 
-            handler = (
-                logging.StreamHandler()
-            )
+            handler = logging.StreamHandler()
 
             handler.setFormatter(
                 logging.Formatter(
@@ -111,21 +209,19 @@ class CoinDCXFuturesWebSocket:
             logging.INFO
         )
 
-        # ==================================================
-        # LOCK / STOP
-        # ==================================================
+        # ----------------------------------------------------
+        # THREAD SAFETY
+        # ----------------------------------------------------
 
-        self._lock = (
-            threading.RLock()
-        )
+        self._lock = threading.RLock()
 
         self._stop_event = (
             threading.Event()
         )
 
-        # ==================================================
+        # ----------------------------------------------------
         # SYMBOL
-        # ==================================================
+        # ----------------------------------------------------
 
         self.symbol = (
             self.normalize_symbol(
@@ -136,15 +232,25 @@ class CoinDCXFuturesWebSocket:
         if not self.validate_symbol(
             self.symbol
         ):
-
             raise ValueError(
                 "Unsupported Futures "
-                f"WebSocket symbol: {self.symbol}"
+                f"WebSocket symbol: "
+                f"{self.symbol}"
             )
 
-        # ==================================================
-        # SOCKET
-        # ==================================================
+        # ----------------------------------------------------
+        # TIMEFRAME
+        # ----------------------------------------------------
+
+        self.timeframe = (
+            str(timeframe).strip()
+            if timeframe
+            else self.DEFAULT_TIMEFRAME
+        )
+
+        # ----------------------------------------------------
+        # SOCKET STATE
+        # ----------------------------------------------------
 
         self.socket_url = (
             self.DEFAULT_SOCKET_URL
@@ -168,6 +274,10 @@ class CoinDCXFuturesWebSocket:
 
         self.last_error = None
 
+        # ----------------------------------------------------
+        # RECONNECT STATE
+        # ----------------------------------------------------
+
         self.reconnect_attempts = 0
 
         self.reconnect_delay = (
@@ -176,63 +286,67 @@ class CoinDCXFuturesWebSocket:
 
         self.subscriptions = set()
 
-        # ==================================================
-        # QUEUE
-        # ==================================================
-
-        self.tick_queue = queue.Queue(
-            maxsize=self.QUEUE_SIZE
-        )
+        # ----------------------------------------------------
+        # THREADS
+        # ----------------------------------------------------
 
         self.socket_thread = None
 
         self.queue_thread = None
 
-        # ==================================================
+        # ----------------------------------------------------
+        # TICK QUEUE
+        # ----------------------------------------------------
+
+        self.tick_queue = queue.Queue(
+            maxsize=self.QUEUE_SIZE
+        )
+
+        # ----------------------------------------------------
         # CANDLE BUILDER
-        # ==================================================
+        # ----------------------------------------------------
 
         self.candle_builder = (
             LiveCandleBuilder(
-                timeframe=timeframe
+                timeframe=self.timeframe
             )
         )
 
-        # ==================================================
-        # BRIDGES
-        # ==================================================
+        # ----------------------------------------------------
+        # CONTROLLER BRIDGE
+        # ----------------------------------------------------
 
         self.controller = None
 
         self.chart_widget = None
 
-        # ==================================================
-        # CALLBACKS
-        # ==================================================
+        # ----------------------------------------------------
+        # OPTIONAL CALLBACKS
+        # ----------------------------------------------------
 
         self.on_tick: Optional[
-            Callable
+            Callable[[dict], None]
         ] = None
 
         self.on_candle: Optional[
-            Callable
+            Callable[[Any], None]
         ] = None
 
         self.on_candle_closed: Optional[
-            Callable
+            Callable[[Any], None]
         ] = None
 
         self.on_connected: Optional[
-            Callable
+            Callable[[], None]
         ] = None
 
         self.on_disconnected: Optional[
-            Callable
+            Callable[[], None]
         ] = None
 
-        # ==================================================
+        # ----------------------------------------------------
         # TICK PROTECTION
-        # ==================================================
+        # ----------------------------------------------------
 
         self._last_tick_key = {}
 
@@ -240,9 +354,9 @@ class CoinDCXFuturesWebSocket:
 
         self._events_registered = False
 
-        # ==================================================
+        # ----------------------------------------------------
         # STATISTICS
-        # ==================================================
+        # ----------------------------------------------------
 
         self.received_ticks = 0
 
@@ -256,9 +370,9 @@ class CoinDCXFuturesWebSocket:
 
         self.callback_errors = 0
 
-        # ==================================================
+        # ----------------------------------------------------
         # LATENCY
-        # ==================================================
+        # ----------------------------------------------------
 
         self.last_exchange_latency_ms = None
 
@@ -274,9 +388,9 @@ class CoinDCXFuturesWebSocket:
 
         self.latency_samples = 0
 
-    # ======================================================
+    # ========================================================
     # SYMBOL NORMALIZATION
-    # ======================================================
+    # ========================================================
 
     @classmethod
     def normalize_symbol(
@@ -294,6 +408,10 @@ class CoinDCXFuturesWebSocket:
         )
 
         mapping = {
+
+            # ------------------------------------------------
+            # BTC
+            # ------------------------------------------------
 
             "BTC":
                 "B-BTC_USDT",
@@ -316,6 +434,10 @@ class CoinDCXFuturesWebSocket:
             "B-BTC-USDT":
                 "B-BTC_USDT",
 
+            # ------------------------------------------------
+            # ETH
+            # ------------------------------------------------
+
             "ETH":
                 "B-ETH_USDT",
 
@@ -337,6 +459,10 @@ class CoinDCXFuturesWebSocket:
             "B-ETH-USDT":
                 "B-ETH_USDT",
 
+            # ------------------------------------------------
+            # GOLD
+            # ------------------------------------------------
+
             "XAU":
                 "B-XAU_USDT",
 
@@ -357,6 +483,10 @@ class CoinDCXFuturesWebSocket:
 
             "GOLD/USDT":
                 "B-XAU_USDT",
+
+            # ------------------------------------------------
+            # SILVER
+            # ------------------------------------------------
 
             "XAG":
                 "B-XAG_USDT",
@@ -385,46 +515,54 @@ class CoinDCXFuturesWebSocket:
             value,
         )
 
+    # ========================================================
+    # SYMBOL VALIDATION
+    # ========================================================
+
     @classmethod
     def validate_symbol(
         cls,
         symbol,
     ):
 
-        return (
+        normalized = (
             cls.normalize_symbol(
                 symbol
             )
+        )
+
+        return (
+            normalized
             in cls.SUPPORTED_SYMBOLS
         )
 
-    # ======================================================
-    # SYMBOL
-    # ======================================================
+    # ========================================================
+    # SYMBOL SETTER
+    # ========================================================
 
     def set_symbol(
         self,
         symbol,
     ):
 
-        symbol = (
+        normalized = (
             self.normalize_symbol(
                 symbol
             )
         )
 
         if not self.validate_symbol(
-            symbol
+            normalized
         ):
-
             raise ValueError(
                 "Unsupported Futures "
-                f"WebSocket symbol: {symbol}"
+                f"WebSocket symbol: "
+                f"{normalized}"
             )
 
         with self._lock:
 
-            self.symbol = symbol
+            self.symbol = normalized
 
             self.socket_channel = None
 
@@ -438,52 +576,71 @@ class CoinDCXFuturesWebSocket:
 
             self.candle_builder.reset()
 
+        self.logger.info(
+            "Futures symbol changed: %s",
+            normalized,
+        )
+
         return True
+
+    # ========================================================
+    # GET SYMBOL
+    # ========================================================
 
     def get_symbol(self):
 
         return self.symbol
+
+    # ========================================================
+    # TRADE CHANNEL
+    # ========================================================
 
     def get_trade_channel(
         self,
         symbol=None,
     ):
 
-        return (
+        normalized = (
             self.normalize_symbol(
-                symbol
-                or self.symbol
+                symbol or self.symbol
             )
+        )
+
+        return (
+            normalized
             + self.SOCKET_CHANNEL_SUFFIX
         )
 
-    # ======================================================
+    # ========================================================
     # CONTROLLER
-    # ======================================================
+    # ========================================================
 
     def set_controller(
         self,
         controller,
     ):
 
-        self.controller = controller
+        with self._lock:
+            self.controller = controller
 
         return True
 
     attach_controller = set_controller
+
+    # ========================================================
+    # CHART
+    # ========================================================
 
     def set_chart_widget(
         self,
         chart_widget,
     ):
 
-        self.chart_widget = (
-            chart_widget
-        )
+        self.chart_widget = chart_widget
 
-    # ======================================================
+    # ========================================================
     # CALLBACKS
-    # ======================================================
+    # ========================================================
 
     def set_tick_callback(
         self,
@@ -504,9 +661,7 @@ class CoinDCXFuturesWebSocket:
         callback,
     ):
 
-        self.on_candle_closed = (
-            callback
-        )
+        self.on_candle_closed = callback
 
     def set_connected_callback(
         self,
@@ -522,9 +677,9 @@ class CoinDCXFuturesWebSocket:
 
         self.on_disconnected = callback
 
-    # ======================================================
+    # ========================================================
     # SAFE CALLBACK
-    # ======================================================
+    # ========================================================
 
     def _safe_callback(
         self,
@@ -550,13 +705,15 @@ class CoinDCXFuturesWebSocket:
                 exc,
             )
 
-    # ======================================================
+    # ========================================================
     # STATUS
-    # ======================================================
+    # ========================================================
 
     def stop_requested(self):
 
-        return self._stop_event.is_set()
+        return (
+            self._stop_event.is_set()
+        )
 
     def is_connected(self):
 
@@ -572,14 +729,14 @@ class CoinDCXFuturesWebSocket:
 
     def is_alive(self):
 
-        return (
+        return bool(
             self.running
             and self.connected
         )
 
-    # ======================================================
+    # ========================================================
     # HEARTBEAT
-    # ======================================================
+    # ========================================================
 
     def update_heartbeat(self):
 
@@ -589,10 +746,13 @@ class CoinDCXFuturesWebSocket:
 
         self.last_message_time = now
 
+    # ========================================================
+    # HEARTBEAT AGE
+    # ========================================================
+
     def heartbeat_age(self):
 
         if self.last_heartbeat is None:
-
             return None
 
         return (
@@ -600,11 +760,13 @@ class CoinDCXFuturesWebSocket:
             - self.last_heartbeat
         )
 
+    # ========================================================
+    # CONNECTION HEALTH
+    # ========================================================
+
     def is_connection_healthy(self):
 
-        age = (
-            self.heartbeat_age()
-        )
+        age = self.heartbeat_age()
 
         return bool(
             self.connected
@@ -614,17 +776,17 @@ class CoinDCXFuturesWebSocket:
             )
         )
 
-    # ======================================================
-    # QUEUE
-    # ======================================================
+    # ========================================================
+    # QUEUE SIZE
+    # ========================================================
 
     def queue_size(self):
 
         return self.tick_queue.qsize()
 
-    # ======================================================
-    # CANDLE
-    # ======================================================
+    # ========================================================
+    # CURRENT CANDLE
+    # ========================================================
 
     def current_candle(self):
 
@@ -633,6 +795,10 @@ class CoinDCXFuturesWebSocket:
             .get_current_candle()
         )
 
+    # ========================================================
+    # LAST CLOSED CANDLE
+    # ========================================================
+
     def last_closed_candle(self):
 
         return (
@@ -640,9 +806,9 @@ class CoinDCXFuturesWebSocket:
             .get_last_closed_candle()
         )
 
-    # ======================================================
-    # TIMESTAMP
-    # ======================================================
+    # ========================================================
+    # TIMESTAMP CONVERSION
+    # ========================================================
 
     @staticmethod
     def _timestamp_to_seconds(
@@ -655,11 +821,7 @@ class CoinDCXFuturesWebSocket:
                 timestamp
             )
 
-            if (
-                value
-                > 10_000_000_000
-            ):
-
+            if value > 10_000_000_000:
                 value /= 1000.0
 
             return value
@@ -672,23 +834,33 @@ class CoinDCXFuturesWebSocket:
 
             return None
 
-    # ======================================================
-    # LATENCY
-    # ======================================================
+    # ========================================================
+    # EXCHANGE LATENCY
+    # ========================================================
 
     def _calculate_exchange_latency(
         self,
         tick,
     ):
 
+        if not isinstance(
+            tick,
+            dict,
+        ):
+            return None
+
+        timestamp = (
+            tick.get(
+                "T",
+                tick.get(
+                    "timestamp"
+                ),
+            )
+        )
+
         ts = (
             self._timestamp_to_seconds(
-                tick.get("T")
-                if isinstance(
-                    tick,
-                    dict,
-                )
-                else None
+                timestamp
             )
         )
 
@@ -700,13 +872,12 @@ class CoinDCXFuturesWebSocket:
             (
                 time.time()
                 - ts
-            )
-            * 1000.0,
+            ) * 1000.0,
         )
 
-    # ======================================================
+    # ========================================================
     # SOCKET CLIENT
-    # ======================================================
+    # ========================================================
 
     def _initialize_socket_client(
         self,
@@ -718,9 +889,11 @@ class CoinDCXFuturesWebSocket:
             engineio_logger=False,
         )
 
-    # ======================================================
+        self._events_registered = False
+
+    # ========================================================
     # CONNECT
-    # ======================================================
+    # ========================================================
 
     def connect(
         self,
@@ -756,7 +929,9 @@ class CoinDCXFuturesWebSocket:
                     )
                 ]
 
-            self.set_symbol(raw)
+            self.set_symbol(
+                raw
+            )
 
         self.socket_channel = (
             self.get_trade_channel()
@@ -764,9 +939,12 @@ class CoinDCXFuturesWebSocket:
 
         self._initialize_socket_client()
 
-        if not (
-            self._register_all_futures_socket_events()
-        ):
+        if not self._register_all_socket_events():
+
+            self.logger.error(
+                "Failed to register "
+                "Futures Socket.IO events."
+            )
 
             return False
 
@@ -782,21 +960,29 @@ class CoinDCXFuturesWebSocket:
             self.RECONNECT_DELAY
         )
 
-        self._start_futures_tick_worker()
+        self._start_tick_worker()
 
-        self.socket_thread = threading.Thread(
-            target=self._connection_worker,
-            name="CoinDCXFuturesSocket",
-            daemon=True,
+        self.socket_thread = (
+            threading.Thread(
+                target=self._connection_worker,
+                name=(
+                    "CoinDCXFuturesSocket"
+                ),
+                daemon=True,
+            )
         )
 
         self.socket_thread.start()
 
         return True
 
-    # ======================================================
+    # ========================================================
+    # END OF PART 1
+    # ========================================================
+
+    # ========================================================
     # CONNECTION WORKER
-    # ======================================================
+    # ========================================================
 
     def _connection_worker(self):
 
@@ -806,12 +992,14 @@ class CoinDCXFuturesWebSocket:
 
                 self.sio.connect(
                     self.socket_url,
-                    transports=[
-                        "websocket"
-                    ],
+                    transports=["websocket"],
                     wait=True,
                     wait_timeout=self.WAIT_TIMEOUT,
                 )
+
+                # ------------------------------------------------
+                # Socket.IO remains active until disconnect.
+                # ------------------------------------------------
 
                 self.sio.wait()
 
@@ -827,8 +1015,7 @@ class CoinDCXFuturesWebSocket:
                 self.connected = False
 
                 self.logger.warning(
-                    "Futures Socket.IO "
-                    "connection failed: %s",
+                    "Futures Socket.IO connection failed: %s",
                     exc,
                 )
 
@@ -837,10 +1024,13 @@ class CoinDCXFuturesWebSocket:
 
             self.connected = False
 
+            # ------------------------------------------------
+            # Reconnect delay
+            # ------------------------------------------------
+
             if self._stop_event.wait(
                 self.reconnect_delay
             ):
-
                 break
 
             self.reconnect_delay = min(
@@ -850,20 +1040,23 @@ class CoinDCXFuturesWebSocket:
 
         self.running = False
 
-    # ======================================================
-    # SOCKET EVENTS
-    # ======================================================
+        self.connected = False
 
-    def _register_socket_events(
-        self,
-    ):
+    # ========================================================
+    # SOCKET EVENT REGISTRATION
+    # ========================================================
 
-        if (
-            self._events_registered
-            or self.sio is None
-        ):
+    def _register_socket_events(self):
 
-            return self.sio is not None
+        if self.sio is None:
+            return False
+
+        if self._events_registered:
+            return True
+
+        # ----------------------------------------------------
+        # CONNECT
+        # ----------------------------------------------------
 
         @self.sio.event
         def connect():
@@ -886,6 +1079,10 @@ class CoinDCXFuturesWebSocket:
 
             self.update_heartbeat()
 
+            # -----------------------------------------------
+            # Subscribe immediately after connection.
+            # -----------------------------------------------
+
             self._subscribe_futures_market()
 
             self._safe_callback(
@@ -896,6 +1093,10 @@ class CoinDCXFuturesWebSocket:
                 "Futures WebSocket connected: %s",
                 self.symbol,
             )
+
+        # ----------------------------------------------------
+        # DISCONNECT
+        # ----------------------------------------------------
 
         @self.sio.event
         def disconnect():
@@ -914,6 +1115,10 @@ class CoinDCXFuturesWebSocket:
                 "Futures WebSocket disconnected."
             )
 
+        # ----------------------------------------------------
+        # CONNECTION ERROR
+        # ----------------------------------------------------
+
         @self.sio.event
         def connect_error(error):
 
@@ -921,17 +1126,27 @@ class CoinDCXFuturesWebSocket:
 
             self.last_error = error
 
+            self.logger.warning(
+                "Futures Socket.IO connect error: %s",
+                error,
+            )
+
         self._events_registered = True
 
         return True
 
-    # ======================================================
-    # MARKET EVENTS
-    # ======================================================
+    # ========================================================
+    # FUTURES MARKET EVENTS
+    # ========================================================
 
-    def _register_futures_market_events(
-        self,
-    ):
+    def _register_futures_market_events(self):
+
+        if self.sio is None:
+            return False
+
+        # ----------------------------------------------------
+        # CoinDCX Futures trade event
+        # ----------------------------------------------------
 
         @self.sio.on("new-trade")
         def _on_new_trade(data):
@@ -942,25 +1157,38 @@ class CoinDCXFuturesWebSocket:
 
         return True
 
-    def _register_all_futures_socket_events(
-        self,
-    ):
+    # ========================================================
+    # ALL SOCKET EVENTS
+    # ========================================================
 
-        return (
+    def _register_all_socket_events(self):
+
+        if self.sio is None:
+            return False
+
+        socket_events = (
             self._register_socket_events()
-            and
+        )
+
+        market_events = (
             self._register_futures_market_events()
         )
 
-    # ======================================================
-    # SUBSCRIBE
-    # ======================================================
+        return bool(
+            socket_events
+            and market_events
+        )
 
-    def _subscribe_futures_market(
-        self,
-    ):
+    # ========================================================
+    # SUBSCRIBE FUTURES MARKET
+    # ========================================================
+
+    def _subscribe_futures_market(self):
 
         if not self.connected:
+            return False
+
+        if self.sio is None:
             return False
 
         channel = (
@@ -975,26 +1203,28 @@ class CoinDCXFuturesWebSocket:
                 "join",
                 {
                     "channelName": channel
-                }
+                },
             )
 
             print(
-                "\n========== FUTURES SUBSCRIPTION =========="
+                "\n"
+                "========== FUTURES SUBSCRIPTION "
+                "=========="
             )
 
             print(
                 "Futures Symbol :",
-                self.symbol
+                self.symbol,
             )
 
             print(
                 "Trade Channel  :",
-                channel
+                channel,
             )
 
             print(
                 "Subscription   :",
-                "JOIN SENT"
+                "JOIN SENT",
             )
 
             print(
@@ -1013,15 +1243,18 @@ class CoinDCXFuturesWebSocket:
 
             self.last_error = exc
 
+            self.logger.exception(
+                "Futures subscription failed: %s",
+                exc,
+            )
+
             return False
 
-    # ======================================================
+    # ========================================================
     # UNSUBSCRIBE
-    # ======================================================
+    # ========================================================
 
-    def _unsubscribe_futures_market(
-        self,
-    ):
+    def _unsubscribe_futures_market(self):
 
         channel = (
             self.socket_channel
@@ -1040,12 +1273,12 @@ class CoinDCXFuturesWebSocket:
                 self.sio.emit(
                     "leave",
                     {
-                        "channelName":
-                            channel
+                        "channelName": channel
                     },
                 )
 
         except Exception:
+
             pass
 
         self.subscriptions.discard(
@@ -1054,9 +1287,9 @@ class CoinDCXFuturesWebSocket:
 
         return True
 
-    # ======================================================
+    # ========================================================
     # DISCONNECT
-    # ======================================================
+    # ========================================================
 
     def disconnect(self):
 
@@ -1076,6 +1309,7 @@ class CoinDCXFuturesWebSocket:
                 self.sio.disconnect()
 
         except Exception:
+
             pass
 
         self.connected = False
@@ -1083,6 +1317,10 @@ class CoinDCXFuturesWebSocket:
         self.subscriptions.clear()
 
         self._clear_queue()
+
+        # ----------------------------------------------------
+        # Do not join ourselves.
+        # ----------------------------------------------------
 
         if (
             self.queue_thread
@@ -1106,13 +1344,21 @@ class CoinDCXFuturesWebSocket:
                 timeout=2
             )
 
+        self.socket_thread = None
+
+        self.queue_thread = None
+
+    # ========================================================
+    # CLOSE
+    # ========================================================
+
     def close(self):
 
         self.disconnect()
 
-    # ======================================================
-    # INCOMING MARKET MESSAGE
-    # ======================================================
+    # ========================================================
+    # INCOMING FUTURES MESSAGE
+    # ========================================================
 
     def _handle_futures_market_message(
         self,
@@ -1131,6 +1377,10 @@ class CoinDCXFuturesWebSocket:
 
             payload = data
 
+            # ------------------------------------------------
+            # JSON string payload
+            # ------------------------------------------------
+
             if isinstance(
                 payload,
                 str,
@@ -1140,15 +1390,52 @@ class CoinDCXFuturesWebSocket:
                     payload
                 )
 
+            # ------------------------------------------------
+            # Wrapped payload
+            #
+            # CoinDCX Futures may send:
+            #
+            # {
+            #     "event": "new-trade",
+            #     "data": "{\"T\":...,\"p\":\"4384.42\",...}"
+            # }
+            #
+            # Therefore "data" may itself be a JSON string.
+            # ------------------------------------------------
+
             if (
-                isinstance(
-                    payload,
-                    dict,
-                )
+                isinstance(payload, dict)
                 and "data" in payload
             ):
 
                 payload = payload["data"]
+
+            # ------------------------------------------------
+            # Decode nested JSON string
+            # ------------------------------------------------
+
+            if isinstance(payload, str):
+
+                try:
+
+                    payload = json.loads(
+                        payload
+                    )
+
+                except json.JSONDecodeError:
+
+                    self.invalid_ticks += 1
+
+                    self.logger.warning(
+                        "Invalid nested Futures JSON payload: %s",
+                        payload,
+                    )
+
+                    return
+
+            # ------------------------------------------------
+            # Normalize single/list payload
+            # ------------------------------------------------
 
             items = (
                 payload
@@ -1173,6 +1460,11 @@ class CoinDCXFuturesWebSocket:
 
                     continue
 
+                # ------------------------------------------------
+                # Internal latency marker.
+                # Removed before external callback.
+                # ------------------------------------------------
+
                 tick[
                     "_receive_monotonic"
                 ] = receive_monotonic
@@ -1188,14 +1480,13 @@ class CoinDCXFuturesWebSocket:
             self.last_error = exc
 
             self.logger.exception(
-                "Futures market "
-                "message failed: %s",
+                "Futures market message failed: %s",
                 exc,
             )
 
-    # ======================================================
-    # NORMALIZE TICK
-    # ======================================================
+    # ========================================================
+    # NORMALIZE FUTURES TICK
+    # ========================================================
 
     def _normalize_futures_tick(
         self,
@@ -1206,7 +1497,6 @@ class CoinDCXFuturesWebSocket:
             tick,
             dict,
         ):
-
             return None
 
         try:
@@ -1255,6 +1545,10 @@ class CoinDCXFuturesWebSocket:
         if price <= 0:
             return None
 
+        # ----------------------------------------------------
+        # Market identifier
+        # ----------------------------------------------------
+
         market = tick.get(
             "s",
             tick.get(
@@ -1262,19 +1556,30 @@ class CoinDCXFuturesWebSocket:
             ),
         )
 
-        if (
-            market
-            and
-            self._normalize_market_identifier(
-                market
-            )
-            !=
-            self._normalize_market_identifier(
-                self.symbol
-            )
-        ):
+        if market:
 
-            return None
+            incoming_market = (
+                self._normalize_market_identifier(
+                    market
+                )
+            )
+
+            current_market = (
+                self._normalize_market_identifier(
+                    self.symbol
+                )
+            )
+
+            if (
+                incoming_market
+                != current_market
+            ):
+
+                return None
+
+        # ----------------------------------------------------
+        # Canonical Futures tick
+        # ----------------------------------------------------
 
         result = dict(
             tick
@@ -1303,9 +1608,9 @@ class CoinDCXFuturesWebSocket:
 
         return result
 
-    # ======================================================
-    # MARKET IDENTIFIER
-    # ======================================================
+    # ========================================================
+    # MARKET IDENTIFIER NORMALIZATION
+    # ========================================================
 
     @staticmethod
     def _normalize_market_identifier(
@@ -1320,21 +1625,30 @@ class CoinDCXFuturesWebSocket:
             .upper()
         )
 
+        # ----------------------------------------------------
+        # Remove common separators
+        # ----------------------------------------------------
+
         for separator in (
             "-",
             "_",
             "/",
         ):
 
-            value = value.replace(
-                separator,
-                "",
+            value = (
+                value.replace(
+                    separator,
+                    "",
+                )
             )
+
+        # ----------------------------------------------------
+        # Convert B-BTCUSDT style identifier
+        # ----------------------------------------------------
 
         if (
             value.startswith("B")
-            and
-            value[1:]
+            and value[1:]
             in {
                 "BTCUSDT",
                 "ETHUSDT",
@@ -1347,9 +1661,9 @@ class CoinDCXFuturesWebSocket:
 
         return value
 
-    # ======================================================
-    # DUPLICATE
-    # ======================================================
+    # ========================================================
+    # DUPLICATE TICK PROTECTION
+    # ========================================================
 
     def _is_duplicate_futures_tick(
         self,
@@ -1363,12 +1677,13 @@ class CoinDCXFuturesWebSocket:
             tick.get("q"),
         )
 
-        if (
+        previous = (
             self._last_tick_key.get(
                 self.symbol
             )
-            == key
-        ):
+        )
+
+        if previous == key:
 
             return True
 
@@ -1378,14 +1693,18 @@ class CoinDCXFuturesWebSocket:
 
         return False
 
-    # ======================================================
-    # QUEUE
-    # ======================================================
+    # ========================================================
+    # QUEUE FUTURES TICK
+    # ========================================================
 
     def _queue_futures_tick(
         self,
         tick,
     ):
+
+        # ----------------------------------------------------
+        # Duplicate protection BEFORE controller delivery.
+        # ----------------------------------------------------
 
         if self._is_duplicate_futures_tick(
             tick
@@ -1395,19 +1714,31 @@ class CoinDCXFuturesWebSocket:
 
             return False
 
-        # ==================================================
-        # CRITICAL
+        # ====================================================
+        # CRITICAL AUTHORITY PATH
         #
-        # LIVE PRICE FIRST
+        # WebSocket tick
+        #       ↓
+        # Controller
         #
-        # No queue.
-        # No candle builder.
-        # No AI.
-        # ==================================================
+        # This happens BEFORE queue processing.
+        #
+        # Therefore:
+        #
+        # Live price latency does NOT depend on:
+        #     - candle building
+        #     - SignalEngine
+        #     - chart
+        #     - queue worker
+        # ====================================================
 
         self._notify_controller_tick(
             tick
         )
+
+        # ----------------------------------------------------
+        # Queue for candle processing.
+        # ----------------------------------------------------
 
         try:
 
@@ -1421,40 +1752,46 @@ class CoinDCXFuturesWebSocket:
 
             self.dropped_ticks += 1
 
+            self.logger.warning(
+                "Futures tick queue full. "
+                "Tick dropped."
+            )
+
             return False
 
-    # ======================================================
-    # NEW TRADE
-    # ======================================================
+    # ========================================================
+    # RAW FUTURES TRADE EVENT
+    # ========================================================
 
-    def _on_futures_new_trade(self, data):
-
-        # ======================================================
-        # FUTURES RAW TRADE DEBUG
-        # ======================================================
+    def _on_futures_new_trade(
+        self,
+        data,
+    ):
 
         print(
-            "\n========== FUTURES RAW TRADE =========="
+            "\n"
+            "========== FUTURES RAW TRADE "
+            "=========="
         )
 
         print(
             "WebSocket Symbol :",
-            self.symbol
+            self.symbol,
         )
 
         print(
             "Channel          :",
-            self.socket_channel
+            self.socket_channel,
         )
 
         print(
             "Raw Data Type    :",
-            type(data)
+            type(data),
         )
 
         print(
             "Raw Data         :",
-            data
+            data,
         )
 
         print(
@@ -1465,22 +1802,22 @@ class CoinDCXFuturesWebSocket:
             data
         )
 
-    # ======================================================
-    # WORKER
-    # ======================================================
+    # ========================================================
+    # END OF PART 2
+    # ========================================================
 
-    def _process_futures_tick_queue(
-        self,
-    ):
+    # ========================================================
+    # TICK WORKER
+    # ========================================================
+
+    def _process_futures_tick_queue(self):
 
         while not self._stop_event.is_set():
 
             try:
 
-                tick = (
-                    self.tick_queue.get(
-                        timeout=self.QUEUE_GET_TIMEOUT
-                    )
+                tick = self.tick_queue.get(
+                    timeout=self.QUEUE_GET_TIMEOUT
                 )
 
             except queue.Empty:
@@ -1506,26 +1843,48 @@ class CoinDCXFuturesWebSocket:
 
                 self.tick_queue.task_done()
 
-    # ======================================================
-    # PROCESS TICK
-    # ======================================================
+    # ========================================================
+    # PROCESS FUTURES TICK
+    # ========================================================
 
     def _process_futures_tick(
         self,
         tick,
     ):
 
-        timestamp = (
-            self._extract_futures_timestamp(
-                tick
+        if not isinstance(
+            tick,
+            dict,
+        ):
+            self.invalid_ticks += 1
+            return None
+
+        # ----------------------------------------------------
+        # Timestamp
+        # ----------------------------------------------------
+
+        try:
+
+            timestamp = (
+                self._extract_futures_timestamp(
+                    tick
+                )
             )
-        )
+
+        except Exception:
+
+            self.invalid_ticks += 1
+
+            return None
+
+        # ----------------------------------------------------
+        # Out-of-order protection
+        # ----------------------------------------------------
 
         if (
             self._last_processed_timestamp
             is not None
-            and
-            timestamp
+            and timestamp
             < self._last_processed_timestamp
         ):
 
@@ -1537,121 +1896,347 @@ class CoinDCXFuturesWebSocket:
             timestamp
         )
 
-        receive = tick.get(
-            "_receive_monotonic"
+        # ----------------------------------------------------
+        # Queue latency
+        # ----------------------------------------------------
+
+        receive_monotonic = (
+            tick.get(
+                "_receive_monotonic"
+            )
         )
 
-        if receive is not None:
+        if receive_monotonic is not None:
 
-            self.last_queue_latency_ms = max(
-                0.0,
-                (
-                    time.monotonic()
-                    - float(receive)
+            try:
+
+                queue_latency = max(
+                    0.0,
+                    (
+                        time.monotonic()
+                        - float(
+                            receive_monotonic
+                        )
+                    )
+                    * 1000.0,
                 )
-                * 1000.0,
-            )
 
-            self.max_queue_latency_ms = max(
-                self.max_queue_latency_ms,
-                self.last_queue_latency_ms,
-            )
+                self.last_queue_latency_ms = (
+                    queue_latency
+                )
 
-        exchange = (
+                self.max_queue_latency_ms = max(
+                    self.max_queue_latency_ms,
+                    queue_latency,
+                )
+
+            except Exception:
+
+                pass
+
+        # ----------------------------------------------------
+        # Exchange latency
+        # ----------------------------------------------------
+
+        exchange_latency = (
             self._calculate_exchange_latency(
                 tick
             )
         )
 
-        if exchange is not None:
+        if exchange_latency is not None:
 
             self.last_exchange_latency_ms = (
-                exchange
+                exchange_latency
             )
 
             self.max_exchange_latency_ms = max(
                 self.max_exchange_latency_ms,
-                exchange,
+                exchange_latency,
             )
 
-        if receive is not None:
+        # ----------------------------------------------------
+        # Total latency
+        # ----------------------------------------------------
 
-            self.last_total_latency_ms = max(
-                0.0,
-                (
-                    time.monotonic()
-                    - float(receive)
+        if receive_monotonic is not None:
+
+            try:
+
+                total_latency = max(
+                    0.0,
+                    (
+                        time.monotonic()
+                        - float(
+                            receive_monotonic
+                        )
+                    )
+                    * 1000.0,
                 )
-                * 1000.0,
+
+                self.last_total_latency_ms = (
+                    total_latency
+                )
+
+                self.max_total_latency_ms = max(
+                    self.max_total_latency_ms,
+                    total_latency,
+                )
+
+                self.latency_samples += 1
+
+            except Exception:
+
+                pass
+
+        # ----------------------------------------------------
+        # Price
+        # ----------------------------------------------------
+
+        price = (
+            self._extract_futures_price(
+                tick
             )
+        )
 
-            self.max_total_latency_ms = max(
-                self.max_total_latency_ms,
-                self.last_total_latency_ms,
-            )
-
-            self.latency_samples += 1
-
-        price = self._extract_futures_price(tick)
         if price is None:
+
             self.invalid_ticks += 1
+
             return None
 
-        volume = self._extract_futures_volume(tick)
+        # ----------------------------------------------------
+        # Volume
+        # ----------------------------------------------------
 
-        closed = self.candle_builder.update_tick(
-            price,
-            volume,
-            timestamp
+        volume = (
+            self._extract_futures_volume(
+                tick
+            )
+        )
+
+        # ====================================================
+        # LIVE CANDLE BUILDER
+        # ====================================================
+
+        closed = (
+            self.candle_builder.update_tick(
+                price,
+                volume,
+                timestamp,
+            )
         )
 
         self.processed_ticks += 1
-        self.last_tick_time = timestamp
 
-        tick.pop("_receive_monotonic", None)
+        self.last_tick_time = (
+            timestamp
+        )
+
+        # ----------------------------------------------------
+        # Remove internal transport field
+        # before external callbacks.
+        # ----------------------------------------------------
+
+        tick.pop(
+            "_receive_monotonic",
+            None,
+        )
+
+        # ====================================================
+        # OPTIONAL EXTERNAL TICK CALLBACK
+        #
+        # IMPORTANT:
+        #
+        # Controller does NOT depend on this callback
+        # for live price.
+        #
+        # Controller already received the tick inside:
+        #
+        #     _queue_futures_tick()
+        #
+        # ====================================================
 
         self._safe_callback(
             self.on_tick,
-            tick
+            tick,
         )
 
-        # ==================================================
-        # DEBUG: FUTURES CANDLE → CONTROLLER
-        # ==================================================
+        # ====================================================
+        # CURRENT LIVE CANDLE
+        # ====================================================
 
         current = (
-            self.candle_builder.get_current_candle()
-        )
-
-        print(
-            "🔥 FUTURES WS CANDLE:",
-            self.symbol,
-            current
-        )
-
-        self._notify_controller_candle(
-            current
-        )
-
-        print(
-            "🔥 FUTURES WS → CONTROLLER DONE:",
-            self.symbol
+            self.candle_builder
+            .get_current_candle()
         )
 
         if current is not None:
-            self._safe_callback(
-                self.on_candle,
+
+            # ------------------------------------------------
+            # Controller live candle bridge
+            # ------------------------------------------------
+
+            self._notify_controller_candle(
                 current
             )
 
-    # ======================================================
+            # ------------------------------------------------
+            # Optional external callback
+            # ------------------------------------------------
+
+            self._safe_callback(
+                self.on_candle,
+                current,
+            )
+
+        # ====================================================
+        # CLOSED CANDLE
+        # ====================================================
+
+        closed_candle = (
+            self._resolve_closed_candle(
+                closed
+            )
+        )
+
+        if closed_candle is not None:
+
+            # ------------------------------------------------
+            # Controller closed-candle bridge
+            #
+            # EXACTLY ONCE from this processing path.
+            # ------------------------------------------------
+
+            self._notify_controller_closed_candle(
+                closed_candle
+            )
+
+            # ------------------------------------------------
+            # Optional external callback
+            # ------------------------------------------------
+
+            self._safe_callback(
+                self.on_candle_closed,
+                closed_candle,
+            )
+
+        return closed_candle
+
+    # ========================================================
+    # RESOLVE CLOSED CANDLE
+    # ========================================================
+
+    def _resolve_closed_candle(
+        self,
+        closed,
+    ):
+
+        """
+        Supports two LiveCandleBuilder contracts:
+
+        1. update_tick() returns Candle
+        2. update_tick() returns True/False while the builder
+           exposes get_last_closed_candle()
+
+        A defensive fallback is also used.
+        """
+
+        # ----------------------------------------------------
+        # Direct Candle return
+        # ----------------------------------------------------
+
+        if closed is not None:
+
+            if (
+                hasattr(
+                    closed,
+                    "timestamp",
+                )
+                and hasattr(
+                    closed,
+                    "close",
+                )
+            ):
+
+                return closed
+
+            # ------------------------------------------------
+            # Boolean close notification
+            # ------------------------------------------------
+
+            if closed is True:
+
+                try:
+
+                    return (
+                        self.candle_builder
+                        .get_last_closed_candle()
+                    )
+
+                except Exception:
+
+                    return None
+
+        # ----------------------------------------------------
+        # Defensive fallback
+        # ----------------------------------------------------
+
+        try:
+
+            candidate = (
+                self.candle_builder
+                .get_last_closed_candle()
+            )
+
+            if candidate is None:
+                return None
+
+            current = (
+                self.candle_builder
+                .get_current_candle()
+            )
+
+            # ------------------------------------------------
+            # Do not return current candle as closed candle.
+            # ------------------------------------------------
+
+            if (
+                current is not None
+                and hasattr(
+                    current,
+                    "timestamp",
+                )
+                and hasattr(
+                    candidate,
+                    "timestamp",
+                )
+                and current.timestamp
+                == candidate.timestamp
+            ):
+
+                return None
+
+            return candidate
+
+        except Exception:
+
+            return None
+
+    # ========================================================
     # EXTRACT PRICE
-    # ======================================================
+    # ========================================================
 
     @staticmethod
     def _extract_futures_price(
         tick,
     ):
+
+        if not isinstance(
+            tick,
+            dict,
+        ):
+            return None
 
         try:
 
@@ -1664,27 +2249,33 @@ class CoinDCXFuturesWebSocket:
                 )
             )
 
-            return (
-                price
-                if price > 0
-                else None
-            )
+            if price <= 0:
+                return None
+
+            return price
 
         except (
             TypeError,
             ValueError,
+            OverflowError,
         ):
 
             return None
 
-    # ======================================================
+    # ========================================================
     # EXTRACT VOLUME
-    # ======================================================
+    # ========================================================
 
     @staticmethod
     def _extract_futures_volume(
         tick,
     ):
+
+        if not isinstance(
+            tick,
+            dict,
+        ):
+            return 0.0
 
         try:
 
@@ -1704,18 +2295,27 @@ class CoinDCXFuturesWebSocket:
         except (
             TypeError,
             ValueError,
+            OverflowError,
         ):
 
             return 0.0
 
-    # ======================================================
+    # ========================================================
     # EXTRACT TIMESTAMP
-    # ======================================================
+    # ========================================================
 
     @staticmethod
     def _extract_futures_timestamp(
         tick,
     ):
+
+        if not isinstance(
+            tick,
+            dict,
+        ):
+            raise ValueError(
+                "Invalid Futures tick."
+            )
 
         value = float(
             tick.get(
@@ -1735,34 +2335,44 @@ class CoinDCXFuturesWebSocket:
             tz=timezone.utc,
         )
 
-    # ======================================================
-    # CONTROLLER PRICE
-    # ======================================================
+    # ========================================================
+    # CONTROLLER LIVE PRICE BRIDGE
+    # ========================================================
 
     def _notify_controller_tick(
         self,
         tick,
     ):
 
-        if self.controller is None:
+        controller = self.controller
+
+        if controller is None:
             return
 
         callback = getattr(
-            self.controller,
+            controller,
             "on_futures_live_tick",
             None,
         )
 
-        if callback:
+        if not callable(callback):
+            return
 
-            self._safe_callback(
-                callback,
-                tick,
-            )
+        # ----------------------------------------------------
+        # Controller callback is protected.
+        #
+        # A UI/controller exception must NEVER kill
+        # the WebSocket receive path.
+        # ----------------------------------------------------
 
-    # ======================================================
-    # CONTROLLER CANDLE
-    # ======================================================
+        self._safe_callback(
+            callback,
+            tick,
+        )
+
+    # ========================================================
+    # CONTROLLER LIVE CANDLE BRIDGE
+    # ========================================================
 
     def _notify_controller_candle(
         self,
@@ -1773,7 +2383,6 @@ class CoinDCXFuturesWebSocket:
             self.controller is None
             or candle is None
         ):
-
             return
 
         callback = getattr(
@@ -1782,16 +2391,17 @@ class CoinDCXFuturesWebSocket:
             None,
         )
 
-        if callback:
+        if not callable(callback):
+            return
 
-            self._safe_callback(
-                callback,
-                candle,
-            )
+        self._safe_callback(
+            callback,
+            candle,
+        )
 
-    # ======================================================
-    # CONTROLLER CLOSED CANDLE
-    # ======================================================
+    # ========================================================
+    # CONTROLLER CLOSED CANDLE BRIDGE
+    # ========================================================
 
     def _notify_controller_closed_candle(
         self,
@@ -1802,7 +2412,6 @@ class CoinDCXFuturesWebSocket:
             self.controller is None
             or candle is None
         ):
-
             return
 
         callback = getattr(
@@ -1811,16 +2420,17 @@ class CoinDCXFuturesWebSocket:
             None,
         )
 
-        if callback:
+        if not callable(callback):
+            return
 
-            self._safe_callback(
-                callback,
-                candle,
-            )
+        self._safe_callback(
+            callback,
+            candle,
+        )
 
-    # ======================================================
+    # ========================================================
     # QUEUE CLEAR
-    # ======================================================
+    # ========================================================
 
     def _clear_queue(self):
 
@@ -1836,13 +2446,11 @@ class CoinDCXFuturesWebSocket:
 
             pass
 
-    # ======================================================
-    # WORKER START
-    # ======================================================
+    # ========================================================
+    # START TICK WORKER
+    # ========================================================
 
-    def _start_futures_tick_worker(
-        self,
-    ):
+    def _start_tick_worker(self):
 
         if (
             self.queue_thread
@@ -1851,27 +2459,30 @@ class CoinDCXFuturesWebSocket:
 
             return
 
-        self.queue_thread = threading.Thread(
-            target=self._process_futures_tick_queue,
-            name="CoinDCXFuturesTickQueue",
-            daemon=True,
+        self.queue_thread = (
+            threading.Thread(
+                target=(
+                    self._process_futures_tick_queue
+                ),
+                name=(
+                    "CoinDCXFuturesTickQueue"
+                ),
+                daemon=True,
+            )
         )
 
         self.queue_thread.start()
 
-    # ======================================================
-    # WORKER STATUS
-    # ======================================================
+    # ========================================================
+    # STOP TICK WORKER
+    # ========================================================
 
-    def _stop_futures_tick_worker(
-        self,
-    ):
+    def _stop_tick_worker(self):
 
         if (
             self.queue_thread
             and self.queue_thread.is_alive()
-            and
-            threading.current_thread()
+            and threading.current_thread()
             is not self.queue_thread
         ):
 
@@ -1879,41 +2490,44 @@ class CoinDCXFuturesWebSocket:
                 timeout=2
             )
 
-    def futures_worker_running(
-        self,
-    ):
+    # ========================================================
+    # WORKER STATUS
+    # ========================================================
+
+    def futures_worker_running(self):
 
         return bool(
             self.queue_thread
             and self.queue_thread.is_alive()
         )
 
-    # ======================================================
-    # STATUS
-    # ======================================================
+    # ========================================================
+    # MARKET SUBSCRIPTION STATUS
+    # ========================================================
 
-    def market_subscription_active(
-        self,
-    ):
+    def market_subscription_active(self):
 
         return bool(
             self.socket_channel
-            and
-            self.socket_channel
+            and self.socket_channel
             in self.subscriptions
         )
 
-    def controller_attached(
-        self,
-    ):
+    # ========================================================
+    # CONTROLLER STATUS
+    # ========================================================
+
+    def controller_attached(self):
 
         return (
             self.controller is not None
         )
 
-    def get_current_futures_price(
-        self,
-    ):
+    # ========================================================
+    # CURRENT FUTURES CANDLE PRICE
+    # ========================================================
+
+    def get_current_futures_price(self):
 
         candle = (
             self.candle_builder
@@ -1921,16 +2535,24 @@ class CoinDCXFuturesWebSocket:
         )
 
         if candle is None:
+            return None
+
+        try:
+
+            return float(
+                candle.close
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
 
             return None
 
-        return float(
-            candle.close
-        )
-
-    # ======================================================
-    # TEST TICK
-    # ======================================================
+    # ========================================================
+    # TEST TICK INJECTION
+    # ========================================================
 
     def inject_test_futures_tick(
         self,
@@ -1953,19 +2575,15 @@ class CoinDCXFuturesWebSocket:
             "_receive_monotonic"
         ] = time.monotonic()
 
-        return (
-            self._queue_futures_tick(
-                normalized
-            )
+        return self._queue_futures_tick(
+            normalized
         )
 
-    # ======================================================
-    # LATENCY
-    # ======================================================
+    # ========================================================
+    # LATENCY STATISTICS
+    # ========================================================
 
-    def get_latency_statistics(
-        self,
-    ):
+    def get_latency_statistics(self):
 
         return {
 
@@ -1991,13 +2609,11 @@ class CoinDCXFuturesWebSocket:
                 self.latency_samples,
         }
 
-    # ======================================================
+    # ========================================================
     # SOCKET STATUS
-    # ======================================================
+    # ========================================================
 
-    def get_socket_status(
-        self,
-    ):
+    def get_socket_status(self):
 
         sio_connected = bool(
             self.sio
@@ -2022,6 +2638,9 @@ class CoinDCXFuturesWebSocket:
             "symbol":
                 self.symbol,
 
+            "timeframe":
+                self.timeframe,
+
             "channel":
                 self.socket_channel,
 
@@ -2039,6 +2658,9 @@ class CoinDCXFuturesWebSocket:
 
             "subscription_active":
                 self.market_subscription_active(),
+
+            "controller_attached":
+                self.controller_attached(),
 
             "worker_running":
                 self.futures_worker_running(),
@@ -2064,45 +2686,37 @@ class CoinDCXFuturesWebSocket:
             "callback_errors":
                 self.callback_errors,
 
-            "last_tick_time":
-                (
-                    self.last_tick_time.isoformat()
-                    if self.last_tick_time
-                    else None
-                ),
+            "last_tick_time": (
+                self.last_tick_time.isoformat()
+                if self.last_tick_time
+                else None
+            ),
 
             "heartbeat_age":
                 self.heartbeat_age(),
 
-            "last_error":
-                (
-                    str(self.last_error)
-                    if self.last_error
-                    else None
-                ),
+            "last_error": (
+                str(self.last_error)
+                if self.last_error
+                else None
+            ),
         }
 
-    # ======================================================
-    # HEALTH
-    # ======================================================
+    # ========================================================
+    # HEALTH REPORT
+    # ========================================================
 
-    def health_report(
-        self,
-    ):
+    def health_report(self):
 
         return {
 
             **self.get_socket_status(),
 
-            "timeframe":
-                self.candle_builder.timeframe,
-
-            "connection_time":
-                (
-                    self.connection_time.isoformat()
-                    if self.connection_time
-                    else None
-                ),
+            "connection_time": (
+                self.connection_time.isoformat()
+                if self.connection_time
+                else None
+            ),
 
             "last_message_time":
                 self.last_message_time,
@@ -2115,17 +2729,31 @@ class CoinDCXFuturesWebSocket:
             "reconnect_attempts":
                 self.reconnect_attempts,
 
+            "reconnect_delay":
+                self.reconnect_delay,
+
+            "candle_builder":
+                self.candle_builder.snapshot(),
+
             "latency":
                 self.get_latency_statistics(),
         }
 
-    # ======================================================
-    # PIPELINE
-    # ======================================================
+    # ========================================================
+    # PIPELINE STATUS
+    # ========================================================
 
-    def pipeline_status(
-        self,
-    ):
+    def pipeline_status(self):
+
+        current_candle = (
+            self.candle_builder
+            .get_current_candle()
+        )
+
+        closed_candle = (
+            self.candle_builder
+            .get_last_closed_candle()
+        )
 
         return {
 
@@ -2137,13 +2765,19 @@ class CoinDCXFuturesWebSocket:
             "current_price":
                 self.get_current_futures_price(),
 
+            "current_candle":
+                current_candle,
+
+            "last_closed_candle":
+                closed_candle,
+
             "latency":
                 self.get_latency_statistics(),
         }
 
-    # ======================================================
+    # ========================================================
     # TIMEFRAME
-    # ======================================================
+    # ========================================================
 
     def set_timeframe(
         self,
@@ -2152,8 +2786,21 @@ class CoinDCXFuturesWebSocket:
 
         try:
 
+            tf = (
+                str(timeframe)
+                .strip()
+            )
+
+            if not tf:
+                return False
+
+            if tf == self.timeframe:
+                return True
+
+            self.timeframe = tf
+
             self.candle_builder.set_timeframe(
-                timeframe
+                tf
             )
 
             self._last_processed_timestamp = (
@@ -2162,47 +2809,58 @@ class CoinDCXFuturesWebSocket:
 
             self._clear_queue()
 
+            self.logger.info(
+                "Futures WebSocket timeframe "
+                "changed to %s",
+                tf,
+            )
+
             return True
 
         except Exception as exc:
 
             self.last_error = exc
 
+            self.logger.exception(
+                "Failed to change Futures "
+                "WebSocket timeframe: %s",
+                exc,
+            )
+
             return False
 
-    # ======================================================
-    # LOG
-    # ======================================================
+    # ========================================================
+    # LOG SOCKET STATUS
+    # ========================================================
 
-    def log_socket_status(
-        self,
-    ):
+    def log_socket_status(self):
 
         self.logger.info(
             "FUTURES SOCKET STATUS: %s",
             self.get_socket_status(),
         )
 
-    def log_pipeline_status(
-        self,
-    ):
+    # ========================================================
+    # LOG PIPELINE STATUS
+    # ========================================================
+
+    def log_pipeline_status(self):
 
         self.logger.info(
             "FUTURES PIPELINE STATUS: %s",
             self.pipeline_status(),
         )
 
-    # ======================================================
+    # ========================================================
     # REPRESENTATION
-    # ======================================================
+    # ========================================================
 
     def __repr__(self):
 
         return (
             "CoinDCXFuturesWebSocket("
             f"symbol='{self.symbol}', "
-            f"timeframe="
-            f"'{self.candle_builder.timeframe}', "
+            f"timeframe='{self.timeframe}', "
             f"connected={self.connected}, "
             f"running={self.running}"
             ")"

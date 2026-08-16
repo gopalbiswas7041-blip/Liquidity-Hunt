@@ -1,4 +1,85 @@
+"""
+============================================================
+Liquidity Hunter AI
+Main Window V20.9.9
+Live Candle Preservation Edition
+============================================================
+
+Responsibilities
+----------------
+• Main application window
+• Dashboard
+• Chart
+• Watchlist
+• Market selector
+• Timeframe selector
+• 30-second background analysis
+• Manual Refresh Signal
+• Futures WebSocket live UI
+• Non-blocking GUI architecture
+• Live candle preservation during analysis
+
+IMPORTANT
+---------
+30-second analysis is NOT removed.
+
+It is moved away from the Qt GUI thread.
+
+Futures WebSocket remains responsible for:
+    • live price
+    • forming candle
+    • candle wick/body movement
+    • live chart updates
+
+30-second background analysis remains responsible for:
+    • signal detection
+    • trade manager
+    • confidence
+    • status
+    • entry
+    • SL
+    • TP
+    • RR
+
+V20.9.9 FIX
+-----------
+Previous V20.9.8 temporarily did:
+
+    controller.chart_widget = None
+
+while background analysis was running.
+
+That could suppress live chart updates because the Futures
+WebSocket Controller bridge uses controller.chart_widget for
+live candle delivery.
+
+V20.9.9 DOES NOT DETACH chart_widget.
+
+Instead, background analysis temporarily disables only the
+historical _sync_chart() operation.
+
+Therefore:
+
+    LIVE WS CANDLE
+        ↓
+    ChartWidget
+        ↓
+    continues immediately
+
+while:
+
+    30-second analysis
+        ↓
+    Controller.refresh()
+        ↓
+    Dashboard
+        ↓
+    remains background work.
+============================================================
+"""
+
 import sys
+import traceback
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -11,16 +92,19 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
-    QSizePolicy
+    QSizePolicy,
 )
 
 from PySide6.QtCore import (
     Qt,
-    QTimer
+    QTimer,
+    QThread,
+    Signal,
+    QObject,
 )
 
 from PySide6.QtGui import (
-    QFont
+    QFont,
 )
 
 from ui.dashboard_widgets import DashboardWidget
@@ -31,74 +115,193 @@ from ui.styles import APP_STYLE
 
 
 # ============================================================
-# Liquidity Hunter AI
-# Main Window V20.8
+# BACKGROUND REFRESH WORKER
 # ============================================================
-#
-# V20.8 FEATURES
-# ----------------
-# • Gold-first market selection
-# • Dynamic market switching
-# • BTC / ETH / GOLD / SILVER
-# • Controller.change_symbol() integration
-# • Dynamic timeframe selection
-# • Controller V20.7 chart synchronization preserved
-# • No duplicate historical chart reload from UI
-# • Live candle updates remain Controller controlled
-# • Auto refresh
+
+
+class RefreshWorker(QObject):
+    """
+    Runs Controller.refresh() outside the Qt GUI thread.
+
+    IMPORTANT
+    ---------
+    The worker does NOT detach controller.chart_widget.
+
+    The Futures WebSocket must remain connected to the live
+    ChartWidget while analysis is running.
+
+    Controller._sync_chart() is temporarily disabled so the
+    background analysis cannot perform a historical chart
+    reload from the worker thread.
+
+    Live Futures WebSocket candle updates are therefore
+    preserved.
+    """
+
+    finished = Signal(object)
+
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        controller,
+    ):
+
+        super().__init__()
+
+        self.controller = controller
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    def run(self):
+
+        original_sync_chart = None
+
+        try:
+
+            # ------------------------------------------------
+            # IMPORTANT V20.9.9
+            #
+            # DO NOT DO:
+            #
+            # controller.chart_widget = None
+            #
+            # because Futures WebSocket live candle callbacks
+            # use controller.chart_widget.
+            #
+            # Instead disable ONLY _sync_chart().
+            # ------------------------------------------------
+
+            if hasattr(
+                self.controller,
+                "_sync_chart",
+            ):
+
+                original_sync_chart = (
+                    self.controller._sync_chart
+                )
+
+                self.controller._sync_chart = (
+                    lambda: None
+                )
+
+            # ------------------------------------------------
+            # Run analysis
+            # ------------------------------------------------
+
+            result = (
+                self.controller.refresh()
+            )
+
+            # ------------------------------------------------
+            # Return result to GUI thread.
+            # ------------------------------------------------
+
+            self.finished.emit(
+                result
+            )
+
+        except Exception:
+
+            error_text = (
+                traceback.format_exc()
+            )
+
+            self.failed.emit(
+                error_text
+            )
+
+        finally:
+
+            # ------------------------------------------------
+            # Restore _sync_chart()
+            # ------------------------------------------------
+
+            try:
+
+                if (
+                    original_sync_chart is not None
+                ):
+
+                    self.controller._sync_chart = (
+                        original_sync_chart
+                    )
+
+            except Exception:
+
+                traceback.print_exc()
+
+
+# ============================================================
+# LIQUIDITY HUNTER AI
+# MAIN WINDOW
 # ============================================================
 
 
 class LiquidityHunterWindow(QMainWindow):
 
-    def __init__(self):
+    # ========================================================
+    # INIT
+    # ========================================================
+
+    def __init__(
+        self,
+    ):
 
         super().__init__()
 
         # ====================================================
-        # Window Settings
+        # WINDOW SETTINGS
         # ====================================================
 
         self.setWindowTitle(
-            "Liquidity Hunter AI V20.8"
+            "Liquidity Hunter AI V20.9.9"
         )
 
         self.resize(
             1700,
-            950
+            950,
         )
 
         self.setMinimumSize(
             1400,
-            850
+            850,
         )
 
         self.setWindowFlag(
-            Qt.WindowStaysOnTopHint
+            Qt.WindowStaysOnTopHint,
         )
 
         self.setStyleSheet(
-            APP_STYLE
+            APP_STYLE,
         )
 
         # ====================================================
-        # Controller
+        # CONTROLLER
         # ====================================================
 
         self.controller = Controller()
 
         # ====================================================
-        # Main Widgets
+        # MAIN WIDGETS
         # ====================================================
 
-        self.dashboard = DashboardWidget()
+        self.dashboard = (
+            DashboardWidget()
+        )
 
-        self.chart = ChartWidget()
+        self.chart = (
+            ChartWidget()
+        )
 
-        self.watchlist = WatchlistWidget()
+        self.watchlist = (
+            WatchlistWidget()
+        )
 
         # ====================================================
-        # UI State
+        # UI STATE
         # ====================================================
 
         self.chart_loaded = False
@@ -108,7 +311,27 @@ class LiquidityHunterWindow(QMainWindow):
         self.active_market_button = None
 
         # ====================================================
-        # Connect Controller -> UI
+        # BACKGROUND REFRESH STATE
+        # ====================================================
+
+        self.refresh_thread = None
+
+        self.refresh_worker = None
+
+        self.refresh_running = False
+
+        # ====================================================
+        # LIVE UI STATE
+        # ====================================================
+
+        self.last_live_price = None
+
+        self.last_live_candle = None
+
+        self.live_tick_count = 0
+
+        # ====================================================
+        # CONTROLLER -> UI
         # ====================================================
 
         self.controller.chart_widget = (
@@ -124,27 +347,36 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # Connect Live Chart
+        # LEGACY CHART WEBSOCKET BRIDGE
+        #
+        # Keep compatibility bridge alive.
+        #
+        # Futures WebSocket remains authoritative through
+        # Controller.
         # ====================================================
 
         try:
 
-            self.controller.websocket.set_chart_widget(
-                self.chart
-            )
+            if self.controller.websocket:
+
+                self.controller.websocket.set_chart_widget(
+                    self.chart
+                )
 
         except Exception as e:
 
             print(
                 "Chart WebSocket connection error:",
-                e
+                e,
             )
 
         # ====================================================
-        # Dashboard Scroll Area
+        # DASHBOARD SCROLL AREA
         # ====================================================
 
-        self.dashboard_scroll = QScrollArea()
+        self.dashboard_scroll = (
+            QScrollArea()
+        )
 
         self.dashboard_scroll.setWidgetResizable(
             True
@@ -163,7 +395,7 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # Main Container
+        # MAIN CONTAINER
         # ====================================================
 
         self.container = QWidget()
@@ -176,7 +408,7 @@ class LiquidityHunterWindow(QMainWindow):
             8,
             8,
             8,
-            8
+            8,
         )
 
         self.main_layout.setSpacing(
@@ -201,7 +433,7 @@ class LiquidityHunterWindow(QMainWindow):
             15,
             10,
             15,
-            10
+            10,
         )
 
         self.top_layout.setSpacing(
@@ -209,7 +441,7 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # Application Title
+        # APPLICATION TITLE
         # ====================================================
 
         self.title_label = QLabel(
@@ -220,7 +452,7 @@ class LiquidityHunterWindow(QMainWindow):
             QFont(
                 "Segoe UI",
                 14,
-                QFont.Bold
+                QFont.Bold,
             )
         )
 
@@ -229,7 +461,7 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # Active Market Display
+        # MARKET STATUS
         # ====================================================
 
         self.market_status_label = QLabel(
@@ -240,7 +472,7 @@ class LiquidityHunterWindow(QMainWindow):
             QFont(
                 "Segoe UI",
                 11,
-                QFont.Bold
+                QFont.Bold,
             )
         )
 
@@ -268,7 +500,7 @@ class LiquidityHunterWindow(QMainWindow):
             0,
             0,
             0,
-            0
+            0,
         )
 
         self.trade_layout.setSpacing(
@@ -297,7 +529,7 @@ class LiquidityHunterWindow(QMainWindow):
             5,
             5,
             5,
-            5
+            5,
         )
 
         self.left_layout.setSpacing(
@@ -322,7 +554,7 @@ class LiquidityHunterWindow(QMainWindow):
             0,
             0,
             0,
-            0
+            0,
         )
 
         self.center_layout.setSpacing(
@@ -331,7 +563,7 @@ class LiquidityHunterWindow(QMainWindow):
 
         self.chart.setSizePolicy(
             QSizePolicy.Expanding,
-            QSizePolicy.Expanding
+            QSizePolicy.Expanding,
         )
 
         self.center_layout.addWidget(
@@ -360,7 +592,7 @@ class LiquidityHunterWindow(QMainWindow):
             5,
             5,
             5,
-            5
+            5,
         )
 
         self.right_layout.setSpacing(
@@ -393,17 +625,17 @@ class LiquidityHunterWindow(QMainWindow):
 
         self.trade_layout.addWidget(
             self.left_panel,
-            2
+            2,
         )
 
         self.trade_layout.addWidget(
             self.center_panel,
-            6
+            6,
         )
 
         self.trade_layout.addWidget(
             self.right_panel,
-            2
+            2,
         )
 
         self.main_layout.addWidget(
@@ -424,7 +656,7 @@ class LiquidityHunterWindow(QMainWindow):
             10,
             6,
             10,
-            6
+            6,
         )
 
         self.status_label = QLabel(
@@ -442,7 +674,7 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # SET CENTRAL WIDGET
+        # CENTRAL WIDGET
         # ====================================================
 
         self.setCentralWidget(
@@ -450,7 +682,7 @@ class LiquidityHunterWindow(QMainWindow):
         )
 
         # ====================================================
-        # SIGNAL CONNECTIONS
+        # DASHBOARD MANUAL REFRESH
         # ====================================================
 
         try:
@@ -459,26 +691,28 @@ class LiquidityHunterWindow(QMainWindow):
                 self.refresh_signal
             )
 
-        except Exception as e:
+        except Exception:
 
             print(
-                "Dashboard refresh connection error:",
-                e
+                "Dashboard refresh connection error:"
             )
 
+            traceback.print_exc()
+
         # ====================================================
-        # INITIAL MARKET
-        #
-        # IMPORTANT:
-        # Controller V20.7 currently defaults to BTC.
-        #
-        # We explicitly switch to GOLD here.
+        # INITIAL GOLD
         # ====================================================
 
         self.initialize_gold_market()
 
         # ====================================================
-        # AUTO REFRESH TIMER
+        # 30 SECOND ANALYSIS TIMER
+        #
+        # IMPORTANT:
+        #
+        # This timer is ONLY for AI analysis.
+        #
+        # It is NOT responsible for live candle movement.
         # ====================================================
 
         self.timer = QTimer(
@@ -493,12 +727,21 @@ class LiquidityHunterWindow(QMainWindow):
             30000
         )
 
+        print(
+            "30-second background analysis timer started."
+        )
+
+        print(
+            "Live Futures WebSocket remains "
+            "independent from analysis timer."
+        )
+
     # ========================================================
     # MARKET SELECTOR
     # ========================================================
 
     def create_market_selector(
-        self
+        self,
     ):
 
         self.market_frame = QFrame()
@@ -511,16 +754,12 @@ class LiquidityHunterWindow(QMainWindow):
             5,
             5,
             5,
-            5
+            5,
         )
 
         self.market_layout.setSpacing(
             6
         )
-
-        # ----------------------------------------------------
-        # Title
-        # ----------------------------------------------------
 
         self.market_title = QLabel(
             "Markets"
@@ -534,7 +773,7 @@ class LiquidityHunterWindow(QMainWindow):
             QFont(
                 "Segoe UI",
                 11,
-                QFont.Bold
+                QFont.Bold,
             )
         )
 
@@ -542,55 +781,32 @@ class LiquidityHunterWindow(QMainWindow):
             self.market_title
         )
 
-        # ----------------------------------------------------
-        # Market Grid
-        # ----------------------------------------------------
-
         self.market_grid = QGridLayout()
 
         self.market_grid.setSpacing(
             6
         )
 
-        # ====================================================
-        # Supported Markets
-        # ====================================================
-        #
-        # Gold:
-        # B-XAU_USDT
-        #
-        # BTC:
-        # B-BTC_USDT
-        #
-        # ETH:
-        # B-ETH_USDT
-        #
-        # Silver:
-        # B-XAG_USDT
-        #
-        # These are CoinDCX-style pair identifiers.
-        # ====================================================
-
         markets = [
 
             (
                 "🥇 GOLD",
-                "B-XAU_USDT"
+                "B-XAU_USDT",
             ),
 
             (
                 "₿ BTC",
-                "B-BTC_USDT"
+                "B-BTC_USDT",
             ),
 
             (
                 "Ξ ETH",
-                "B-ETH_USDT"
+                "B-ETH_USDT",
             ),
 
             (
                 "🥈 SILVER",
-                "B-XAG_USDT"
+                "B-XAG_USDT",
             ),
 
         ]
@@ -611,12 +827,12 @@ class LiquidityHunterWindow(QMainWindow):
 
             button.setSizePolicy(
                 QSizePolicy.Expanding,
-                QSizePolicy.Fixed
+                QSizePolicy.Fixed,
             )
 
             button.setProperty(
                 "market_symbol",
-                symbol
+                symbol,
             )
 
             button.clicked.connect(
@@ -625,7 +841,7 @@ class LiquidityHunterWindow(QMainWindow):
                 name=name:
                 self.change_market(
                     symbol,
-                    name
+                    name,
                 )
             )
 
@@ -636,7 +852,7 @@ class LiquidityHunterWindow(QMainWindow):
             self.market_grid.addWidget(
                 button,
                 row,
-                col
+                col,
             )
 
             col += 1
@@ -660,7 +876,7 @@ class LiquidityHunterWindow(QMainWindow):
     # ========================================================
 
     def initialize_gold_market(
-        self
+        self,
     ):
 
         print(
@@ -725,8 +941,6 @@ class LiquidityHunterWindow(QMainWindow):
                 "Initial GOLD market exception."
             )
 
-            import traceback
-
             traceback.print_exc()
 
     # ========================================================
@@ -736,7 +950,7 @@ class LiquidityHunterWindow(QMainWindow):
     def change_market(
         self,
         symbol,
-        market_name
+        market_name,
     ):
 
         print(
@@ -749,12 +963,12 @@ class LiquidityHunterWindow(QMainWindow):
 
         print(
             "Market :",
-            market_name
+            market_name,
         )
 
         print(
             "Symbol :",
-            symbol
+            symbol,
         )
 
         print(
@@ -763,10 +977,6 @@ class LiquidityHunterWindow(QMainWindow):
 
         try:
 
-            # ------------------------------------------------
-            # Prevent duplicate switch
-            # ------------------------------------------------
-
             if (
                 self.controller.symbol
                 == symbol
@@ -774,14 +984,10 @@ class LiquidityHunterWindow(QMainWindow):
 
                 print(
                     "Market already active:",
-                    symbol
+                    symbol,
                 )
 
                 return
-
-            # ------------------------------------------------
-            # UI status
-            # ------------------------------------------------
 
             self.market_status_label.setText(
                 f"MARKET : {market_name}"
@@ -793,29 +999,17 @@ class LiquidityHunterWindow(QMainWindow):
                 f"AI : Loading"
             )
 
-            # ------------------------------------------------
-            # Disable market buttons during switch
-            # ------------------------------------------------
-
             self.set_market_buttons_enabled(
                 False
             )
 
             QApplication.processEvents()
 
-            # ------------------------------------------------
-            # Controller handles complete lifecycle
-            # ------------------------------------------------
-
             success = (
                 self.controller.change_symbol(
                     symbol
                 )
             )
-
-            # ------------------------------------------------
-            # Success
-            # ------------------------------------------------
 
             if success:
 
@@ -825,12 +1019,12 @@ class LiquidityHunterWindow(QMainWindow):
 
                 print(
                     "Active Market :",
-                    market_name
+                    market_name,
                 )
 
                 print(
                     "Active Symbol :",
-                    self.controller.symbol
+                    self.controller.symbol,
                 )
 
                 self.market_status_label.setText(
@@ -847,19 +1041,22 @@ class LiquidityHunterWindow(QMainWindow):
                     symbol
                 )
 
-                # --------------------------------------------
-                # Reset UI chart flag
-                #
-                # Controller itself controls chart reload.
-                # This flag only prevents old UI code from
-                # sending the chart dataset again.
-                # --------------------------------------------
-
                 self.chart_loaded = True
 
-            # ------------------------------------------------
-            # Failure
-            # ------------------------------------------------
+                # ------------------------------------------------
+                # Any previous analysis result belongs to the old
+                # market. The next background refresh will rebuild
+                # it for the new symbol.
+                # ------------------------------------------------
+
+                print(
+                    "Market changed."
+                )
+
+                print(
+                    "Live Futures WebSocket will now "
+                    "follow the active symbol."
+                )
 
             else:
 
@@ -874,8 +1071,6 @@ class LiquidityHunterWindow(QMainWindow):
                 )
 
         except Exception:
-
-            import traceback
 
             traceback.print_exc()
 
@@ -901,12 +1096,10 @@ class LiquidityHunterWindow(QMainWindow):
 
     def set_market_buttons_enabled(
         self,
-        enabled
+        enabled,
     ):
 
-        for button in (
-            self.market_buttons
-        ):
+        for button in self.market_buttons:
 
             button.setEnabled(
                 enabled
@@ -916,14 +1109,12 @@ class LiquidityHunterWindow(QMainWindow):
 
     def set_active_market_button(
         self,
-        symbol
+        symbol,
     ):
 
         self.active_market_button = None
 
-        for button in (
-            self.market_buttons
-        ):
+        for button in self.market_buttons:
 
             button_symbol = (
                 button.property(
@@ -944,7 +1135,7 @@ class LiquidityHunterWindow(QMainWindow):
     # ========================================================
 
     def create_timeframe_selector(
-        self
+        self,
     ):
 
         self.timeframe_frame = QFrame()
@@ -957,16 +1148,12 @@ class LiquidityHunterWindow(QMainWindow):
             5,
             5,
             5,
-            5
+            5,
         )
 
         self.timeframe_layout.setSpacing(
             6
         )
-
-        # ----------------------------------------------------
-        # Title
-        # ----------------------------------------------------
 
         self.tf_title = QLabel(
             "Timeframes"
@@ -980,7 +1167,7 @@ class LiquidityHunterWindow(QMainWindow):
             QFont(
                 "Segoe UI",
                 11,
-                QFont.Bold
+                QFont.Bold,
             )
         )
 
@@ -989,12 +1176,8 @@ class LiquidityHunterWindow(QMainWindow):
             0,
             0,
             1,
-            4
+            4,
         )
-
-        # ----------------------------------------------------
-        # Timeframes
-        # ----------------------------------------------------
 
         self.tf_buttons = []
 
@@ -1007,7 +1190,7 @@ class LiquidityHunterWindow(QMainWindow):
             "30m",
             "1H",
             "4H",
-            "1D"
+            "1D",
 
         ]
 
@@ -1027,7 +1210,7 @@ class LiquidityHunterWindow(QMainWindow):
 
             btn.setSizePolicy(
                 QSizePolicy.Expanding,
-                QSizePolicy.Fixed
+                QSizePolicy.Fixed,
             )
 
             btn.clicked.connect(
@@ -1045,7 +1228,7 @@ class LiquidityHunterWindow(QMainWindow):
             self.timeframe_layout.addWidget(
                 btn,
                 row,
-                col
+                col,
             )
 
             col += 1
@@ -1066,7 +1249,7 @@ class LiquidityHunterWindow(QMainWindow):
 
     def change_timeframe(
         self,
-        timeframe
+        timeframe,
     ):
 
         print(
@@ -1075,12 +1258,12 @@ class LiquidityHunterWindow(QMainWindow):
 
         print(
             "TIMEFRAME BUTTON CLICKED :",
-            timeframe
+            timeframe,
         )
 
         print(
             "Current Market :",
-            self.controller.symbol
+            self.controller.symbol,
         )
 
         print(
@@ -1097,6 +1280,11 @@ class LiquidityHunterWindow(QMainWindow):
 
             QApplication.processEvents()
 
+            # ------------------------------------------------
+            # Controller owns Futures WebSocket timeframe
+            # lifecycle.
+            # ------------------------------------------------
+
             self.controller.change_timeframe(
                 timeframe
             )
@@ -1107,9 +1295,11 @@ class LiquidityHunterWindow(QMainWindow):
                 f"AI : Running"
             )
 
-        except Exception:
+            print(
+                "Timeframe switched successfully."
+            )
 
-            import traceback
+        except Exception:
 
             traceback.print_exc()
 
@@ -1120,112 +1310,162 @@ class LiquidityHunterWindow(QMainWindow):
             )
 
     # ========================================================
-    # REFRESH SIGNAL
+    # START BACKGROUND REFRESH
     # ========================================================
 
-    def refresh_signal(
-        self
+    def _start_background_refresh(
+        self,
     ):
 
+        # ----------------------------------------------------
+        # Prevent overlapping analysis jobs.
+        # ----------------------------------------------------
+
+        if self.refresh_running:
+
+            print(
+                "REFRESH SKIPPED : "
+                "previous analysis still running."
+            )
+
+            return
+
+        self.refresh_running = True
+
         print(
-            "\n=============================="
+            "\n======================================"
         )
 
         print(
-            "===== REFRESH START ====="
+            "BACKGROUND ANALYSIS START"
         )
 
         print(
-            "=============================="
+            "GUI THREAD : FREE"
         )
+
+        print(
+            "LIVE WS    : PRESERVED"
+        )
+
+        print(
+            "CHART      : LIVE"
+        )
+
+        print(
+            "======================================"
+        )
+
+        # ----------------------------------------------------
+        # Worker
+        # ----------------------------------------------------
+
+        self.refresh_thread = QThread(
+            self
+        )
+
+        self.refresh_worker = (
+            RefreshWorker(
+                self.controller
+            )
+        )
+
+        self.refresh_worker.moveToThread(
+            self.refresh_thread
+        )
+
+        # ----------------------------------------------------
+        # Thread -> Worker
+        # ----------------------------------------------------
+
+        self.refresh_thread.started.connect(
+            self.refresh_worker.run
+        )
+
+        # ----------------------------------------------------
+        # Worker -> GUI
+        # ----------------------------------------------------
+
+        self.refresh_worker.finished.connect(
+            self._on_background_refresh_finished
+        )
+
+        self.refresh_worker.failed.connect(
+            self._on_background_refresh_failed
+        )
+
+        # ----------------------------------------------------
+        # Stop worker thread after result
+        # ----------------------------------------------------
+
+        self.refresh_worker.finished.connect(
+            self.refresh_thread.quit
+        )
+
+        self.refresh_worker.failed.connect(
+            self.refresh_thread.quit
+        )
+
+        # ----------------------------------------------------
+        # Thread cleanup
+        # ----------------------------------------------------
+
+        self.refresh_thread.finished.connect(
+            self._on_refresh_thread_finished
+        )
+
+        # ----------------------------------------------------
+        # Start
+        # ----------------------------------------------------
+
+        self.refresh_thread.start()
+
+    # ========================================================
+    # BACKGROUND REFRESH FINISHED
+    # ========================================================
+
+    def _on_background_refresh_finished(
+        self,
+        data,
+    ):
 
         try:
 
-            # =================================================
-            # Controller refresh
-            #
-            # IMPORTANT:
-            # Controller V20.7 handles chart synchronization.
-            #
-            # Therefore this UI DOES NOT call:
-            #
-            # self.chart.set_chart_data(...)
-            #
-            # on every refresh.
-            # =================================================
-
-            data = (
-                self.controller.refresh()
-            )
-
             if not isinstance(
                 data,
-                dict
+                dict,
             ):
 
                 print(
-                    "Controller returned invalid data."
+                    "Background refresh returned "
+                    "invalid data."
                 )
 
                 return
 
             print(
+                "\n======================================"
+            )
+
+            print(
+                "BACKGROUND ANALYSIS FINISHED"
+            )
+
+            print(
+                "======================================"
+            )
+
+            print(
                 "Returned Keys :",
                 list(
                     data.keys()
-                )
+                ),
             )
 
             # =================================================
-            # Current timeframe data
-            # =================================================
-
-            data_5m = data.get(
-                f"data_{self.controller.timeframe}"
-            )
-
-            if data_5m is None:
-
-                data_5m = data.get(
-                    "data_5m"
-                )
-
-            print(
-                "data_5m Type :",
-                type(
-                    data_5m
-                )
-            )
-
-            print(
-                "data_5m None :",
-                data_5m is None
-            )
-
-            if data_5m is not None:
-
-                try:
-
-                    print(
-                        "Rows :",
-                        len(
-                            data_5m
-                        )
-                    )
-
-                    print(
-                        data_5m.tail()
-                    )
-
-                except Exception as e:
-
-                    print(
-                        "DataFrame Error :",
-                        e
-                    )
-
-            # =================================================
-            # Dashboard Update
+            # DASHBOARD UPDATE
+            #
+            # This executes on the GUI thread.
             # =================================================
 
             try:
@@ -1236,12 +1476,14 @@ class LiquidityHunterWindow(QMainWindow):
 
             except Exception:
 
-                import traceback
+                print(
+                    "Dashboard update error:"
+                )
 
                 traceback.print_exc()
 
             # =================================================
-            # Market Status
+            # MARKET STATUS
             # =================================================
 
             try:
@@ -1269,7 +1511,7 @@ class LiquidityHunterWindow(QMainWindow):
                 market_name = (
                     market_names.get(
                         current_symbol,
-                        current_symbol
+                        current_symbol,
                     )
                 )
 
@@ -1288,40 +1530,221 @@ class LiquidityHunterWindow(QMainWindow):
                 pass
 
             # =================================================
-            # DO NOT RELOAD CHART HERE
-            # =================================================
-            #
-            # Controller V20.7 already does:
-            #
-            # _sync_chart()
-            #
-            # and live candle updates use:
-            #
-            # update_last_candle()
-            #
-            # So historical chart data is not resent every
-            # 30-second refresh.
+            # LIVE PRICE DEBUG
             # =================================================
 
+            try:
+
+                live_price = (
+                    data.get(
+                        "live_price"
+                    )
+                )
+
+                if live_price is not None:
+
+                    self.last_live_price = (
+                        live_price
+                    )
+
+                    print(
+                        "Analysis Live Price :",
+                        live_price,
+                    )
+
+                print(
+                    "Live Price Source :",
+                    data.get(
+                        "live_price_source"
+                    ),
+                )
+
+                print(
+                    "Live Candle Source :",
+                    data.get(
+                        "live_candle_source"
+                    ),
+                )
+
+            except Exception:
+
+                pass
+
             print(
-                "UI Chart reload skipped."
+                "Dashboard analysis updated."
             )
 
             print(
-                "Reason : Controller V20.7 owns chart sync."
+                "Live WebSocket chart remains "
+                "independent from this refresh."
             )
 
         except Exception:
 
-            import traceback
-
             traceback.print_exc()
 
-            self.status_label.setText(
-                "Socket : Error   |   "
-                "Market : Error   |   "
-                "AI : Error"
-            )
+    # ========================================================
+    # BACKGROUND REFRESH FAILED
+    # ========================================================
+
+    def _on_background_refresh_failed(
+        self,
+        error_text,
+    ):
+
+        print(
+            "\n======================================"
+        )
+
+        print(
+            "BACKGROUND ANALYSIS ERROR"
+        )
+
+        print(
+            "======================================"
+        )
+
+        print(
+            error_text
+        )
+
+        # ----------------------------------------------------
+        # Analysis failure is NOT WebSocket failure.
+        # ----------------------------------------------------
+
+        self.status_label.setText(
+            f"Socket : Connected   |   "
+            f"Market : {self.controller.symbol}   |   "
+            f"AI : Analysis Error"
+        )
+
+    # ========================================================
+    # REFRESH THREAD FINISHED
+    # ========================================================
+
+    def _on_refresh_thread_finished(
+        self,
+    ):
+
+        self.refresh_running = False
+
+        worker = (
+            self.refresh_worker
+        )
+
+        thread = (
+            self.refresh_thread
+        )
+
+        self.refresh_worker = None
+
+        self.refresh_thread = None
+
+        if worker is not None:
+
+            worker.deleteLater()
+
+        if thread is not None:
+
+            thread.deleteLater()
+
+        print(
+            "Background refresh worker cleaned."
+        )
+
+        print(
+            "Live Futures WebSocket remains active."
+        )
+
+    # ========================================================
+    # REFRESH SIGNAL
+    # ========================================================
+
+    def refresh_signal(
+        self,
+    ):
+
+        """
+        Starts background AI analysis.
+
+        This NEVER controls live candle movement.
+
+        Architecture:
+
+            QTimer 30 sec
+                  ↓
+            Background QThread
+                  ↓
+            Controller.refresh()
+                  ↓
+            Dashboard
+
+        Meanwhile:
+
+            Futures WebSocket
+                  ↓
+            Controller
+                  ↓
+            Live Candle
+                  ↓
+            ChartWidget
+                  ↓
+            Immediate chart movement
+        """
+
+        print(
+            "\n=============================="
+        )
+
+        print(
+            "===== REFRESH REQUEST ====="
+        )
+
+        print(
+            "=============================="
+        )
+
+        self._start_background_refresh()
+
+    # ========================================================
+    # LIVE UI HEALTH
+    # ========================================================
+
+    def _update_live_ui_state(
+        self,
+        price=None,
+        candle=None,
+    ):
+
+        """
+        Optional lightweight UI state helper.
+
+        This method does NOT perform analysis.
+
+        It only stores the latest live values that may be
+        supplied by future Controller/UI bridge extensions.
+
+        The authoritative live candle path remains inside
+        Controller -> ChartWidget.
+        """
+
+        try:
+
+            if price is not None:
+
+                self.last_live_price = (
+                    float(price)
+                )
+
+            if candle is not None:
+
+                self.last_live_candle = (
+                    candle
+                )
+
+        except Exception:
+
+            pass
 
     # ========================================================
     # CLOSE EVENT
@@ -1329,25 +1752,62 @@ class LiquidityHunterWindow(QMainWindow):
 
     def closeEvent(
         self,
-        event
+        event,
     ):
 
         print(
             "\nClosing Liquidity Hunter AI..."
         )
 
+        # ----------------------------------------------------
+        # Stop 30-second analysis timer
+        # ----------------------------------------------------
+
         try:
 
             if hasattr(
                 self,
-                "timer"
+                "timer",
             ):
 
                 self.timer.stop()
 
+                print(
+                    "30-second analysis timer stopped."
+                )
+
         except Exception:
 
             pass
+
+        # ----------------------------------------------------
+        # Stop background analysis thread
+        # ----------------------------------------------------
+
+        try:
+
+            if (
+                self.refresh_thread is not None
+                and self.refresh_thread.isRunning()
+            ):
+
+                print(
+                    "Waiting for background analysis..."
+                )
+
+                self.refresh_thread.quit()
+
+                self.refresh_thread.wait(
+                    3000
+                )
+
+        except Exception:
+
+            traceback.print_exc()
+
+        # ----------------------------------------------------
+        # Controller shutdown
+        # ----------------------------------------------------
 
         try:
 
@@ -1357,9 +1817,11 @@ class LiquidityHunterWindow(QMainWindow):
 
         except Exception:
 
-            import traceback
-
             traceback.print_exc()
+
+        print(
+            "Liquidity Hunter AI closed."
+        )
 
         event.accept()
 

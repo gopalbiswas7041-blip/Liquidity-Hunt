@@ -1,29 +1,80 @@
 """
 Liquidity Hunter AI
-Version : V20.5 Live Candle Sync
-File    : ui/chart_widget.py
+Chart Widget V20.9.6
+Futures Live Synchronization Edition
+LIVE BRIDGE FIX
 
 Responsibilities
 ----------------
 - Lightweight Charts WebEngine
 - Historical candle loading
-- Live candle updates
-- Historical/live timestamp protection
-- Same-timestamp update ordering
-- Stale queued signal protection
-- Pending chart data
-- Pending AI signal
+- GUI-thread-only JavaScript execution
+- Thread-safe Futures live candle bridge
+- Explicit Qt queued signal connection
+- Throttled live candle rendering
+- Same timestamp candle update protection
+- New timestamp candle creation
+- Stale update protection
+- No chart reset during live updates
+- JavaScript update diagnostics
+- Live bridge diagnostics
+
+Architecture
+------------
+
+Futures Worker Thread
+        |
+        | update_last_candle(candle)
+        v
+Qt Signal.emit(candle)
+        |
+        | QueuedConnection
+        v
+GUI Thread
+        |
+        v
+_receive_live_candle_gui()
+        |
+        v
+_pending_live_candle
+        |
+        v
+100ms QTimer
+        |
+        v
+_flush_live_candle()
+        |
+        v
+runJavaScript()
+        |
+        v
+window.updateLastCandle()
+        |
+        v
+candleSeries.update()
+
+IMPORTANT
+---------
+update_last_candle() MUST NOT touch GUI state.
+
+It only emits the Qt signal.
+
+All QWebEngineView / JavaScript / pending-state
+operations happen inside the GUI thread.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 import json
+import threading
 
 from PySide6.QtCore import (
     QUrl,
+    QTimer,
     Signal,
     Slot,
+    Qt,
 )
 
 from PySide6.QtWidgets import (
@@ -39,87 +90,134 @@ from PySide6.QtWebEngineWidgets import (
 
 class ChartWidget(QWidget):
 
-    # ====================================================
-    # Signals
-    # ====================================================
+    # ======================================================
+    # THREAD-SAFE LIVE CANDLE SIGNAL
+    # ======================================================
+    #
+    # Futures WebSocket / worker thread calls:
+    #
+    #     update_last_candle(candle)
+    #
+    # That method ONLY emits this signal.
+    #
+    # Qt QueuedConnection then moves the candle into
+    # the GUI thread.
+    # ======================================================
 
-    live_candle_signal = Signal(dict)
+    live_candle_signal = Signal(object)
 
-    # ====================================================
-    # Initialization
-    # ====================================================
+    # ======================================================
+    # INIT
+    # ======================================================
 
     def __init__(self):
 
         super().__init__()
 
-        # ====================================================
-        # Chart State
-        # ====================================================
+        # ==================================================
+        # THREAD DIAGNOSTIC
+        # ==================================================
+
+        self._gui_thread_ident = (
+            threading.get_ident()
+        )
+
+        # ==================================================
+        # CHART READY STATE
+        # ==================================================
 
         self.chart_ready = False
 
+        # ==================================================
+        # PENDING HISTORICAL DATA
+        # ==================================================
+
         self.pending_candles = None
+
+        # ==================================================
+        # PENDING TRADE SIGNAL
+        # ==================================================
 
         self.pending_signal = None
 
-        # ====================================================
-        # LIVE CANDLE ORDER PROTECTION
-        # ====================================================
+        # ==================================================
+        # CHART CANDLE STATE
+        # ==================================================
 
-        # Latest candle timestamp known by the chart.
         self._last_chart_candle_time = None
 
-        # Latest live candle timestamp.
         self._last_live_candle_time = None
 
-        # ----------------------------------------------------
-        # Monotonic live update sequence.
-        #
-        # IMPORTANT:
-        #
-        # Timestamp alone cannot detect an old queued update
-        # when multiple updates belong to the same candle.
-        #
-        # Example:
-        #
-        # seq 101 -> close 63491.72
-        # seq 102 -> close 63491.83
-        #
-        # If seq 101 reaches the GUI after seq 102,
-        # it must be rejected.
-        # ----------------------------------------------------
+        # ==================================================
+        # LIVE CANDLE BUFFER
+        # ==================================================
+
+        self._pending_live_candle = None
 
         self._live_update_sequence = 0
 
         self._last_applied_live_sequence = 0
 
-        # ====================================================
-        # Layout
-        # ====================================================
+        # ==================================================
+        # DIAGNOSTIC STATE
+        # ==================================================
 
-        layout = QVBoxLayout(self)
+        self._live_updates_received = 0
+
+        self._live_updates_flushed = 0
+
+        self._live_updates_stale = 0
+
+        self._live_updates_invalid = 0
+
+        self._last_live_close = None
+
+        self._last_js_result = None
+
+        self._last_js_error = None
+
+        self._last_live_thread = None
+
+        self._last_gui_thread = None
+
+        # ==================================================
+        # LAYOUT
+        # ==================================================
+
+        layout = QVBoxLayout(
+            self
+        )
 
         title = QLabel(
             "📈 LIVE MARKET CHART"
         )
 
-        title.setStyleSheet("""
+        title.setStyleSheet(
+            """
             QLabel{
                 font-size:18px;
                 font-weight:bold;
                 color:white;
                 padding:8px;
             }
-        """)
+            """
+        )
 
-        # ====================================================
-        # WebEngine
-        # ====================================================
+        # ==================================================
+        # WEBVIEW
+        # ==================================================
 
-        self.webview = QWebEngineView()
+        self.webview = (
+            QWebEngineView()
+        )
 
-        self.webview.setMinimumHeight(500)
+        self.webview.setMinimumHeight(
+            500
+        )
+
+        # ==================================================
+        # CHART HTML
+        # ==================================================
 
         html_file = (
             Path(__file__).parent
@@ -133,103 +231,214 @@ class ChartWidget(QWidget):
 
         self.webview.load(
             QUrl.fromLocalFile(
-                str(html_file.resolve())
+                str(
+                    html_file.resolve()
+                )
             )
         )
 
-        layout.addWidget(title)
-        layout.addWidget(self.webview)
+        layout.addWidget(
+            title
+        )
 
-        # ====================================================
-        # Live Candle Signal
-        # ====================================================
+        layout.addWidget(
+            self.webview
+        )
+
+        # ==================================================
+        # SIGNAL -> GUI SLOT
+        # ==================================================
+        #
+        # IMPORTANT:
+        #
+        # Explicit Qt.QueuedConnection is used.
+        #
+        # This guarantees that the receiver slot runs
+        # through the ChartWidget GUI thread event loop.
+        # ==================================================
 
         self.live_candle_signal.connect(
-            self._update_last_candle_gui
+            self._receive_live_candle_gui,
+            Qt.ConnectionType.QueuedConnection,
         )
 
-        print("CONNECT DONE")
+        # ==================================================
+        # GUI LIVE UPDATE TIMER
+        # ==================================================
+        #
+        # 100 ms:
+        #
+        # maximum 10 visual chart updates / second.
+        #
+        # This does NOT throttle WebSocket ticks.
+        #
+        # It only throttles GUI rendering.
+        # ==================================================
+
+        self._live_chart_timer = (
+            QTimer(self)
+        )
+
+        self._live_chart_timer.setInterval(
+            100
+        )
+
+        self._live_chart_timer.timeout.connect(
+            self._flush_live_candle
+        )
+
+        self._live_chart_timer.start()
+
         print(
-            self._update_last_candle_gui
+            "============================================================"
+        )
+        print(
+            "ChartWidget V20.9.6 initialized."
+        )
+        print(
+            "LIVE BRIDGE FIX ACTIVE"
+        )
+        print(
+            "GUI thread:",
+            self._gui_thread_ident,
+        )
+        print(
+            "============================================================"
         )
 
-    # ========================================================
-    # CHART LOADED
-    # ========================================================
+    # ======================================================
+    # GUI THREAD CHECK
+    # ======================================================
 
+    def _is_gui_thread(self):
+
+        current = threading.get_ident()
+
+        return (
+            current
+            ==
+            self._gui_thread_ident
+        )
+
+    # ======================================================
+    # CHART LOADED
+    # ======================================================
+
+    @Slot(bool)
     def _on_chart_loaded(
         self,
         ok,
     ):
 
-        print(
-            ">>> _on_chart_loaded() CALLED <<<"
+        # ==================================================
+        # THREAD DIAGNOSTIC
+        # ==================================================
+
+        self._last_gui_thread = (
+            threading.get_ident()
         )
 
-        self.chart_ready = ok
-
-        print(
-            "==================================="
-        )
-
-        print(
-            "Chart Loaded :",
+        self.chart_ready = bool(
             ok
         )
 
         print(
-            "==================================="
+            "============================================================"
         )
 
-        # ----------------------------------------------------
-        # Pending Historical Candles
-        # ----------------------------------------------------
+        print(
+            "[CHART LOAD]"
+        )
 
-        if (
-            ok
-            and self.pending_candles is not None
-        ):
+        print(
+            "Loaded     :",
+            ok,
+        )
+
+        print(
+            "GUI Thread :",
+            self._last_gui_thread,
+        )
+
+        print(
+            "Expected   :",
+            self._gui_thread_ident,
+        )
+
+        print(
+            "GUI Match  :",
+            self._is_gui_thread(),
+        )
+
+        print(
+            "============================================================"
+        )
+
+        if not ok:
 
             print(
-                "Sending Pending Candle Data..."
+                "❌ Chart HTML failed to load."
             )
 
-            data = self.pending_candles
+            return
+
+        print(
+            "✅ Chart HTML loaded successfully."
+        )
+
+        print(
+            "✅ JavaScript bridge available."
+        )
+
+        # ==================================================
+        # HISTORICAL DATA
+        # ==================================================
+
+        if (
+            self.pending_candles
+            is not None
+        ):
+
+            data = (
+                self.pending_candles
+            )
 
             self.pending_candles = None
 
-            self.set_chart_data(data)
-
-        else:
-
             print(
-                "No Pending Candle Data"
+                "[CHART LOAD] Applying pending historical data."
             )
 
-        # ----------------------------------------------------
-        # Pending AI Signal
-        # ----------------------------------------------------
+            self.set_chart_data(
+                data
+            )
+
+        # ==================================================
+        # PENDING SIGNAL
+        # ==================================================
 
         if (
-            ok
-            and self.pending_signal is not None
+            self.pending_signal
+            is not None
         ):
 
-            print(
-                "Sending Pending Trade Signal..."
+            signal = (
+                self.pending_signal
             )
 
-            signal = self.pending_signal
-
             self.pending_signal = None
+
+            print(
+                "[CHART LOAD] Applying pending trade signal."
+            )
 
             self.show_trade_signal(
                 signal
             )
 
-    # ========================================================
-    # DATAFRAME -> CANDLE LIST
-    # ========================================================
+    # ======================================================
+    # DATAFRAME -> CANDLES
+    # ======================================================
 
     def _convert_dataframe(
         self,
@@ -237,9 +446,11 @@ class ChartWidget(QWidget):
     ):
 
         if df is None:
+
             return []
 
         if df.empty:
+
             return []
 
         candles = []
@@ -248,135 +459,118 @@ class ChartWidget(QWidget):
 
             try:
 
-                timestamp = (
-                    int(
-                        index.timestamp()
-                    )
+                timestamp = int(
+                    index.timestamp()
+                )
+
+                candles.append(
+                    {
+                        "time":
+                            timestamp,
+
+                        "open":
+                            float(
+                                row["Open"]
+                            ),
+
+                        "high":
+                            float(
+                                row["High"]
+                            ),
+
+                        "low":
+                            float(
+                                row["Low"]
+                            ),
+
+                        "close":
+                            float(
+                                row["Close"]
+                            ),
+                    }
                 )
 
             except Exception as exc:
 
                 print(
-                    "HIST TIMESTAMP ERROR:",
+                    "[CHART HISTORICAL] "
+                    "Candle conversion skipped:",
                     exc,
                 )
 
                 continue
 
-            print(
-                "HIST DEBUG:",
-                index,
-                getattr(
-                    index,
-                    "tzinfo",
-                    None,
-                ),
-                timestamp,
-            )
-
-            candles.append({
-
-                "time": timestamp,
-
-                "open": float(
-                    row["Open"]
-                ),
-
-                "high": float(
-                    row["High"]
-                ),
-
-                "low": float(
-                    row["Low"]
-                ),
-
-                "close": float(
-                    row["Close"]
-                ),
-            })
-
-        if not candles:
-            return []
-
-        print(
-            "========== FIRST CANDLE =========="
-        )
-
-        print(
-            candles[0]
-        )
-
-        print(
-            "========== LAST CANDLE =========="
-        )
-
-        print(
-            candles[-1]
-        )
-
-        print(
-            "=================================="
+        candles.sort(
+            key=lambda item:
+                item["time"]
         )
 
         return candles
 
-    # ========================================================
-    # SET HISTORICAL CHART DATA
-    # ========================================================
+    # ======================================================
+    # HISTORICAL DATA
+    # ======================================================
 
+    @Slot(object)
     def set_chart_data(
         self,
         dataframe,
     ):
 
-        print(
-            "set_chart_data() called"
-        )
+        # ==================================================
+        # GUI THREAD ONLY
+        # ==================================================
 
-        print(
-            "Chart Ready :",
-            self.chart_ready,
-        )
+        if not self._is_gui_thread():
 
-        # ----------------------------------------------------
-        # Chart not ready
-        # ----------------------------------------------------
+            print(
+                "⚠️ set_chart_data called outside GUI thread."
+            )
+
+            self.pending_candles = (
+                dataframe
+            )
+
+            return
+
+        # ==================================================
+        # CHART NOT READY
+        # ==================================================
 
         if not self.chart_ready:
 
             print(
-                "Chart not ready. "
-                "Saving pending candles."
+                "[CHART HISTORICAL] "
+                "Chart not ready. Data queued."
             )
 
-            self.pending_candles = dataframe
+            self.pending_candles = (
+                dataframe
+            )
 
             return
 
-        # ----------------------------------------------------
-        # Convert dataframe
-        # ----------------------------------------------------
+        # ==================================================
+        # CONVERT
+        # ==================================================
 
-        candles = self._convert_dataframe(
-            dataframe
+        candles = (
+            self._convert_dataframe(
+                dataframe
+            )
         )
 
         if not candles:
 
             print(
-                "No candle data available."
+                "⚠️ [CHART HISTORICAL] No candles."
             )
 
             return
 
-        print(
-            "Candles Sent :",
-            len(candles)
-        )
-
-        # ====================================================
-        # Register Latest Historical Candle
-        # ====================================================
+        # ==================================================
+        # RESET CHART STATE
+        # ==================================================
 
         try:
 
@@ -392,430 +586,596 @@ class ChartWidget(QWidget):
                 None
             )
 
-            # ----------------------------------------------
-            # Reset live sequence for new dataset
-            # ----------------------------------------------
+            self._pending_live_candle = (
+                None
+            )
 
             self._live_update_sequence = 0
 
             self._last_applied_live_sequence = 0
 
-            print(
-                "Chart Latest Candle Time :",
-                self._last_chart_candle_time,
+            self._live_updates_received = 0
+
+            self._live_updates_flushed = 0
+
+            self._live_updates_stale = 0
+
+            self._live_updates_invalid = 0
+
+            self._last_live_close = (
+                candles[-1]["close"]
             )
+
+            self._last_js_result = None
+
+            self._last_js_error = None
 
         except Exception as exc:
 
             print(
-                "Latest candle time error :",
+                "❌ Chart historical state error:",
                 exc,
             )
 
-        # ----------------------------------------------------
-        # Send historical data to JavaScript
-        # ----------------------------------------------------
+            return
+
+        # ==================================================
+        # HISTORICAL DEBUG
+        # ==================================================
+
+        print(
+            "============================================================"
+        )
+
+        print(
+            "[CHART HISTORICAL]"
+        )
+
+        print(
+            "Candles       :",
+            len(candles),
+        )
+
+        print(
+            "First time    :",
+            candles[0]["time"],
+        )
+
+        print(
+            "Last time     :",
+            candles[-1]["time"],
+        )
+
+        print(
+            "Last close    :",
+            candles[-1]["close"],
+        )
+
+        print(
+            "Chart ready   :",
+            self.chart_ready,
+        )
+
+        print(
+            "============================================================"
+        )
+
+        # ==================================================
+        # JAVASCRIPT
+        # ==================================================
 
         js = (
             "window.setChartData("
-            + json.dumps(candles)
+            + json.dumps(
+                candles,
+                separators=(
+                    ",",
+                    ":",
+                ),
+            )
             + ");"
         )
 
-        self.webview.page().runJavaScript(
-            js
+        try:
+
+            self.webview.page().runJavaScript(
+                js,
+                self._on_historical_js_result,
+            )
+
+        except Exception as exc:
+
+            self._last_js_error = str(
+                exc
+            )
+
+            print(
+                "❌ Historical JavaScript error:",
+                exc,
+            )
+
+    # ======================================================
+    # HISTORICAL JS RESULT
+    # ======================================================
+
+    def _on_historical_js_result(
+        self,
+        result,
+    ):
+
+        self._last_js_result = result
+
+        print(
+            "[CHART HISTORICAL JS RESULT]",
+            result,
         )
 
-    # ========================================================
-    # LIVE CANDLE UPDATE
-    # ========================================================
+    # ======================================================
+    # LIVE CANDLE ENTRY POINT
+    # ======================================================
+    #
+    # IMPORTANT:
+    #
+    # This method may be called by:
+    #
+    # - Futures WebSocket thread
+    # - Futures worker
+    # - Controller worker
+    #
+    # Therefore it MUST NOT:
+    #
+    # - touch QWebEngineView
+    # - call runJavaScript
+    # - modify GUI state
+    # - modify pending candle state
+    #
+    # It ONLY emits a Qt signal.
+    # ======================================================
 
     def update_last_candle(
         self,
         candle,
     ):
 
-        print(
-            "ChartWidget.update_last_candle() CALLED"
-        )
-
-        print(
-            candle
-        )
-
-        # ----------------------------------------------------
-        # Basic validation
-        # ----------------------------------------------------
-
-        if not self.chart_ready:
+        if candle is None:
 
             print(
-                "LIVE UPDATE IGNORED: "
-                "Chart not ready"
+                "⚠️ [LIVE BRIDGE] Received None candle."
+            )
+
+            return
+
+        # ==================================================
+        # WORKER THREAD DIAGNOSTIC
+        # ==================================================
+
+        current_thread = (
+            threading.get_ident()
+        )
+
+        self._last_live_thread = (
+            current_thread
+        )
+
+        # ==================================================
+        # SAFE DEBUG
+        # ==================================================
+
+        try:
+
+            timestamp = int(
+                candle.timestamp.timestamp()
+            )
+
+            close = float(
+                candle.close
+            )
+
+        except Exception as exc:
+
+            print(
+                "❌ [LIVE BRIDGE] Invalid candle:",
+                exc,
+            )
+
+            self._live_updates_invalid += 1
+
+            return
+
+        print(
+            "------------------------------------------------------------"
+        )
+
+        print(
+            "[CONTROLLER → CHART]"
+        )
+
+        print(
+            "Thread       :",
+            current_thread,
+        )
+
+        print(
+            "GUI Thread   :",
+            self._gui_thread_ident,
+        )
+
+        print(
+            "Candle time  :",
+            candle.timestamp,
+        )
+
+        print(
+            "Close        :",
+            close,
+        )
+
+        print(
+            "Signal emit  : YES",
+        )
+
+        print(
+            "------------------------------------------------------------"
+        )
+
+        # ==================================================
+        # CRITICAL FIX
+        # ==================================================
+        #
+        # DO NOT TOUCH:
+        #
+        # self._pending_live_candle
+        #
+        # here.
+        #
+        # DO NOT TOUCH:
+        #
+        # self._last_chart_candle_time
+        #
+        # here.
+        #
+        # ONLY emit.
+        # ==================================================
+
+        try:
+
+            self.live_candle_signal.emit(
+                candle
+            )
+
+        except Exception as exc:
+
+            print(
+                "❌ [LIVE BRIDGE] Signal emit failed:",
+                exc,
+            )
+
+    # ======================================================
+    # GUI THREAD RECEIVER
+    # ======================================================
+    #
+    # This is the ONLY place where live candle GUI state
+    # is modified.
+    # ======================================================
+
+    @Slot(object)
+    def _receive_live_candle_gui(
+        self,
+        candle,
+    ):
+
+        # ==================================================
+        # GUI THREAD DIAGNOSTIC
+        # ==================================================
+
+        gui_thread = (
+            threading.get_ident()
+        )
+
+        self._last_gui_thread = (
+            gui_thread
+        )
+
+        print(
+            "============================================================"
+        )
+
+        print(
+            "[CHART GUI RECEIVED]"
+        )
+
+        print(
+            "Thread       :",
+            gui_thread,
+        )
+
+        print(
+            "Expected GUI :",
+            self._gui_thread_ident,
+        )
+
+        print(
+            "GUI Match    :",
+            gui_thread
+            ==
+            self._gui_thread_ident,
+        )
+
+        print(
+            "============================================================"
+        )
+
+        # ==================================================
+        # SAFETY
+        # ==================================================
+
+        if not self._is_gui_thread():
+
+            print(
+                "❌ CRITICAL: Live candle receiver "
+                "is NOT running in GUI thread."
             )
 
             return
 
         if candle is None:
 
-            print(
-                "LIVE UPDATE IGNORED: "
-                "Candle is None"
-            )
-
             return
 
-        # ----------------------------------------------------
-        # Timestamp
-        # ----------------------------------------------------
+        # ==================================================
+        # PARSE CANDLE
+        # ==================================================
 
         try:
 
-            candle_timestamp = int(
+            timestamp = int(
                 candle.timestamp.timestamp()
             )
 
+            candle_data = {
+
+                "time":
+                    timestamp,
+
+                "open":
+                    float(
+                        candle.open
+                    ),
+
+                "high":
+                    float(
+                        candle.high
+                    ),
+
+                "low":
+                    float(
+                        candle.low
+                    ),
+
+                "close":
+                    float(
+                        candle.close
+                    ),
+            }
+
         except Exception as exc:
 
+            self._live_updates_invalid += 1
+
             print(
-                "LIVE UPDATE IGNORED: "
-                "Invalid timestamp",
+                "❌ GUI live candle receive error:",
                 exc,
             )
 
             return
 
-        print(
-            "LIVE DEBUG:",
-            candle.timestamp,
-            candle.timestamp.tzinfo,
-            candle_timestamp,
+        # ==================================================
+        # LIVE UPDATE RECEIVED
+        # ==================================================
+
+        self._live_updates_received += 1
+
+        self._last_live_close = (
+            candle_data["close"]
         )
 
-        # ====================================================
-        # Timestamp Ordering
-        # ====================================================
+        # ==================================================
+        # STALE PROTECTION
+        # ==================================================
 
         last_time = (
             self._last_chart_candle_time
         )
 
-        print(
-            "Last Chart Candle Time :",
-            last_time,
-        )
-
-        print(
-            "Incoming Candle Time    :",
-            candle_timestamp,
-        )
-
-        # ----------------------------------------------------
-        # Older candle
-        # ----------------------------------------------------
-
         if (
             last_time is not None
-            and candle_timestamp < last_time
+            and
+            timestamp < last_time
         ):
 
-            print(
-                "⚠️ STALE CANDLE IGNORED"
-            )
+            self._live_updates_stale += 1
 
             print(
-                "Incoming :",
-                candle_timestamp,
-            )
-
-            print(
-                "Latest   :",
+                "[CHART LIVE] STALE RECEIVED:",
+                timestamp,
+                "<",
                 last_time,
             )
 
             return
 
-        # ----------------------------------------------------
-        # Same candle
-        # ----------------------------------------------------
-
-        if (
-            last_time is not None
-            and candle_timestamp == last_time
-        ):
-
-            print(
-                "LIVE CANDLE UPDATE:"
-            )
-
-            print(
-                "Same timestamp -> "
-                "Updating current candle"
-            )
-
-        # ----------------------------------------------------
-        # New candle
-        # ----------------------------------------------------
-
-        elif (
-            last_time is None
-            or candle_timestamp > last_time
-        ):
-
-            print(
-                "🟢 NEWER LIVE CANDLE ACCEPTED"
-            )
-
-        # ====================================================
-        # Generate Monotonic Sequence
-        # ====================================================
+        # ==================================================
+        # SEQUENCE
+        # ==================================================
 
         self._live_update_sequence += 1
 
-        update_sequence = (
+        candle_data[
+            "_seq"
+        ] = (
             self._live_update_sequence
         )
 
-        # ====================================================
-        # Build Internal Payload
-        # ====================================================
-
-        candle_data = {
-
-            "time":
-                candle_timestamp,
-
-            "open":
-                float(candle.open),
-
-            "high":
-                float(candle.high),
-
-            "low":
-                float(candle.low),
-
-            "close":
-                float(candle.close),
-
-            "_seq":
-                update_sequence,
-        }
-
-        print(
-            "========== LIVE CANDLE =========="
-        )
-
-        print(
-            candle_data
-        )
-
-        print(
-            "Sequence :",
-            update_sequence,
-        )
-
-        print(
-            type(
-                candle_data["time"]
-            )
-        )
-
-        print(
-            "================================"
-        )
-
-        # ----------------------------------------------------
-        # WebView safety
-        # ----------------------------------------------------
-
-        if self.webview is None:
-
-            print(
-                "LIVE UPDATE IGNORED: "
-                "WebView missing"
-            )
-
-            return
-
-        try:
-
-            page = self.webview.page()
-
-        except RuntimeError:
-
-            return
-
-        if page is None:
-            return
-
-        # ====================================================
-        # IMPORTANT
+        # ==================================================
+        # LATEST CANDLE WINS
+        # ==================================================
         #
-        # Update timestamp state immediately.
-        # ====================================================
+        # If 50 ticks arrive within 100ms,
+        # only the newest candle state is rendered.
+        #
+        # Tick processing itself remains untouched.
+        # ==================================================
 
-        self._last_chart_candle_time = (
-            candle_timestamp
-        )
-
-        self._last_live_candle_time = (
-            candle_timestamp
-        )
-
-        print(
-            "Accepted Candle Timestamp :",
-            self._last_chart_candle_time,
-        )
-
-        print(
-            "Accepted Update Sequence  :",
-            update_sequence,
-        )
-
-        # ----------------------------------------------------
-        # Emit
-        # ----------------------------------------------------
-
-        self.live_candle_signal.emit(
+        self._pending_live_candle = (
             candle_data
         )
 
-    # ========================================================
-    # GUI SLOT
-    # ========================================================
+        print(
+            "[CHART GUI BUFFERED]"
+            f" seq={self._live_update_sequence}"
+            f" time={timestamp}"
+            f" close={candle_data['close']}"
+        )
 
-    @Slot(dict)
-    def _update_last_candle_gui(
+    # ======================================================
+    # GUI TIMER FLUSH
+    # ======================================================
+
+    @Slot()
+    def _flush_live_candle(
         self,
-        candle_data,
     ):
 
+        # ==================================================
+        # GUI THREAD CHECK
+        # ==================================================
+
+        if not self._is_gui_thread():
+
+            print(
+                "❌ CRITICAL: _flush_live_candle "
+                "outside GUI thread."
+            )
+
+            return
+
+        # ==================================================
+        # CHART NOT READY
+        # ==================================================
+
+        if not self.chart_ready:
+
+            return
+
+        # ==================================================
+        # NO PENDING UPDATE
+        # ==================================================
+
+        candle_data = (
+            self._pending_live_candle
+        )
+
+        if candle_data is None:
+
+            return
+
+        # ==================================================
+        # CONSUME
+        # ==================================================
+
+        self._pending_live_candle = None
+
         try:
 
-            print(
-                "GUI SLOT CALLED"
+            sequence = int(
+                candle_data[
+                    "_seq"
+                ]
             )
-
-            print(
-                candle_data
-            )
-
-            if not self.chart_ready:
-                return
-
-            # =================================================
-            # Sequence Validation
-            # =================================================
-
-            try:
-
-                incoming_sequence = int(
-                    candle_data["_seq"]
-                )
-
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ):
-
-                print(
-                    "⚠️ GUI UPDATE IGNORED: "
-                    "Invalid sequence"
-                )
-
-                return
-
-            latest_sequence = (
-                self._last_applied_live_sequence
-            )
-
-            print(
-                "Incoming Sequence :",
-                incoming_sequence,
-            )
-
-            print(
-                "Latest Sequence   :",
-                latest_sequence,
-            )
-
-            # -------------------------------------------------
-            # Old queued update
-            # -------------------------------------------------
 
             if (
-                incoming_sequence
-                < latest_sequence
+                sequence
+                <=
+                self._last_applied_live_sequence
             ):
 
                 print(
-                    "⚠️ GUI STALE UPDATE IGNORED"
-                )
-
-                print(
-                    "Incoming Sequence :",
-                    incoming_sequence,
-                )
-
-                print(
-                    "Latest Sequence   :",
-                    latest_sequence,
+                    "[CHART LIVE] "
+                    "Duplicate sequence ignored:",
+                    sequence,
                 )
 
                 return
 
-            # -------------------------------------------------
-            # Mark sequence as applied
-            # -------------------------------------------------
+            timestamp = int(
+                candle_data[
+                    "time"
+                ]
+            )
+
+            # ==================================================
+            # TIMESTAMP PROTECTION
+            # ==================================================
+            #
+            # IMPORTANT:
+            #
+            # timestamp == last timestamp
+            # is VALID.
+            #
+            # It means:
+            #
+            # existing 5m candle is being updated.
+            #
+            # Only timestamp < last timestamp is stale.
+            # ==================================================
+
+            if (
+                self._last_chart_candle_time
+                is not None
+                and
+                timestamp
+                <
+                self._last_chart_candle_time
+            ):
+
+                self._live_updates_stale += 1
+
+                print(
+                    "[CHART LIVE] "
+                    "FLUSH STALE:",
+                    timestamp,
+                    "<",
+                    self._last_chart_candle_time,
+                )
+
+                return
+
+            # ==================================================
+            # APPLY INTERNAL STATE
+            # ==================================================
 
             self._last_applied_live_sequence = (
-                incoming_sequence
+                sequence
             )
 
-            # =================================================
-            # Timestamp Validation
-            # =================================================
-
-            incoming_time = int(
-                candle_data["time"]
+            self._last_chart_candle_time = (
+                timestamp
             )
 
-            latest_time = (
-                self._last_live_candle_time
+            self._last_live_candle_time = (
+                timestamp
             )
 
-            if (
-                latest_time is not None
-                and incoming_time < latest_time
-            ):
+            self._live_updates_flushed += 1
 
-                print(
-                    "⚠️ GUI STALE CANDLE IGNORED"
-                )
-
-                print(
-                    "Incoming :",
-                    incoming_time,
-                )
-
-                print(
-                    "Latest   :",
-                    latest_time,
-                )
-
-                return
-
-            # =================================================
-            # Build JS-only payload
-            #
-            # _seq is NOT sent to JavaScript.
-            # =================================================
+            # ==================================================
+            # JS CANDLE
+            # ==================================================
 
             js_candle = {
 
                 "time":
-                    incoming_time,
+                    timestamp,
 
                 "open":
                     float(
@@ -838,90 +1198,351 @@ class ChartWidget(QWidget):
                     ),
             }
 
-            # =================================================
-            # JavaScript
-            # =================================================
+            # ==================================================
+            # DEBUG
+            # ==================================================
+
+            print(
+                "============================================================"
+            )
+
+            print(
+                "[CHART LIVE FLUSH]"
+            )
+
+            print(
+                "Sequence     :",
+                sequence,
+            )
+
+            print(
+                "Timestamp    :",
+                timestamp,
+            )
+
+            print(
+                "Open         :",
+                js_candle["open"],
+            )
+
+            print(
+                "High         :",
+                js_candle["high"],
+            )
+
+            print(
+                "Low          :",
+                js_candle["low"],
+            )
+
+            print(
+                "Close        :",
+                js_candle["close"],
+            )
+
+            print(
+                "JS Dispatch  : YES",
+            )
+
+            print(
+                "============================================================"
+            )
+
+            # ==================================================
+            # JAVASCRIPT
+            # ==================================================
 
             js = (
                 "window.updateLastCandle("
                 + json.dumps(
-                    js_candle
+                    js_candle,
+                    separators=(
+                        ",",
+                        ":",
+                    ),
                 )
                 + ");"
             )
 
-            print(
-                js
-            )
+            # ==================================================
+            # GUI THREAD ONLY
+            # ==================================================
 
             self.webview.page().runJavaScript(
                 js,
-                lambda result: print(
-                    "JS Returned:",
-                    result,
-                ),
+                self._on_live_js_result,
             )
 
-        except Exception:
+        except Exception as exc:
 
-            import traceback
+            self._last_js_error = str(
+                exc
+            )
 
-            traceback.print_exc()
+            print(
+                "❌ Live candle JavaScript dispatch error:",
+                exc,
+            )
 
-    # ========================================================
-    # AI TRADE SIGNAL OVERLAY
-    # ========================================================
+    # ======================================================
+    # LIVE JS RESULT
+    # ======================================================
 
+    def _on_live_js_result(
+        self,
+        result,
+    ):
+
+        self._last_js_result = result
+
+        print(
+            "[CHART LIVE JS RESULT]",
+            result,
+        )
+
+        if result is None:
+
+            print(
+                "⚠️ [CHART LIVE JS RESULT] "
+                "JavaScript returned None."
+            )
+
+        elif result != "UPDATED":
+
+            print(
+                "⚠️ [CHART LIVE JS RESULT] "
+                "Unexpected result:",
+                result,
+            )
+
+    # ======================================================
+    # TRADE SIGNAL
+    # ======================================================
+
+    @Slot(object)
     def show_trade_signal(
         self,
         signal,
     ):
 
-        try:
+        # ==================================================
+        # GUI THREAD CHECK
+        # ==================================================
 
-            # ------------------------------------------------
-            # Chart not ready
-            # ------------------------------------------------
-
-            if not self.chart_ready:
-
-                print(
-                    "Chart Not Ready -> "
-                    "Saving Trade Signal"
-                )
-
-                self.pending_signal = signal
-
-                return
-
-            # ------------------------------------------------
-            # Send signal to JavaScript
-            # ------------------------------------------------
-
-            js = (
-                "window.showTradeSignal("
-                + json.dumps(signal)
-                + ");"
-            )
+        if not self._is_gui_thread():
 
             print(
-                "Sending Trade Signal To JS"
+                "⚠️ show_trade_signal called "
+                "outside GUI thread."
             )
 
-            print(
+            self.pending_signal = (
                 signal
             )
 
-            self.webview.page().runJavaScript(
-                js,
-                lambda result: print(
-                    "Trade Signal JS Returned:",
-                    result,
-                ),
+            return
+
+        # ==================================================
+        # CHART NOT READY
+        # ==================================================
+
+        if not self.chart_ready:
+
+            self.pending_signal = (
+                signal
             )
+
+            return
+
+        try:
+
+            js = (
+                "window.showTradeSignal("
+                + json.dumps(
+                    signal,
+                    separators=(
+                        ",",
+                        ":",
+                    ),
+                )
+                + ");"
+            )
+
+            self.webview.page().runJavaScript(
+                js
+            )
+
+        except Exception as exc:
+
+            print(
+                "❌ Trade signal JavaScript error:",
+                exc,
+            )
+
+    # ======================================================
+    # FORCE RELOAD
+    # ======================================================
+
+    @Slot()
+    def force_reload(
+        self,
+    ):
+
+        # ==================================================
+        # GUI THREAD CHECK
+        # ==================================================
+
+        if not self._is_gui_thread():
+
+            print(
+                "⚠️ force_reload requested "
+                "outside GUI thread."
+            )
+
+            return
+
+        print(
+            "============================================================"
+        )
+
+        print(
+            "[CHART] FORCE RELOAD"
+        )
+
+        print(
+            "============================================================"
+        )
+
+        self.chart_ready = False
+
+        self._pending_live_candle = (
+            None
+        )
+
+        self._last_chart_candle_time = (
+            None
+        )
+
+        self._last_live_candle_time = (
+            None
+        )
+
+        self._live_update_sequence = 0
+
+        self._last_applied_live_sequence = 0
+
+        self._live_updates_received = 0
+
+        self._live_updates_flushed = 0
+
+        self._live_updates_stale = 0
+
+        self._live_updates_invalid = 0
+
+        self._last_live_close = None
+
+        self._last_js_result = None
+
+        self._last_js_error = None
+
+        try:
+
+            self.webview.reload()
+
+        except Exception as exc:
+
+            print(
+                "❌ Chart reload error:",
+                exc,
+            )
+
+    # ======================================================
+    # DIAGNOSTICS
+    # ======================================================
+
+    @Slot()
+    def chart_live_status(
+        self,
+    ):
+
+        return {
+
+            "chart_ready":
+                self.chart_ready,
+
+            "gui_thread":
+                self._gui_thread_ident,
+
+            "last_live_thread":
+                self._last_live_thread,
+
+            "last_gui_thread":
+                self._last_gui_thread,
+
+            "last_chart_candle_time":
+                self._last_chart_candle_time,
+
+            "last_live_candle_time":
+                self._last_live_candle_time,
+
+            "pending_live_candle":
+                self._pending_live_candle
+                is not None,
+
+            "live_updates_received":
+                self._live_updates_received,
+
+            "live_updates_flushed":
+                self._live_updates_flushed,
+
+            "live_updates_stale":
+                self._live_updates_stale,
+
+            "live_updates_invalid":
+                self._live_updates_invalid,
+
+            "last_live_close":
+                self._last_live_close,
+
+            "last_js_result":
+                self._last_js_result,
+
+            "last_js_error":
+                self._last_js_error,
+        }
+
+    # ======================================================
+    # CLEANUP
+    # ======================================================
+
+    def closeEvent(
+        self,
+        event,
+    ):
+
+        try:
+
+            if (
+                hasattr(
+                    self,
+                    "_live_chart_timer",
+                )
+            ):
+
+                self._live_chart_timer.stop()
 
         except Exception:
 
-            import traceback
+            pass
 
-            traceback.print_exc()
+        try:
+
+            self.webview.stop()
+
+        except Exception:
+
+            pass
+
+        super().closeEvent(
+            event
+        )

@@ -1,11 +1,11 @@
 // ==========================================
 // Liquidity Hunter AI
-// Chart JS V20.9.4
+// Chart JS V20.9.5
 // Futures Live Synchronization Edition
 // ==========================================
 
 console.log(
-    "Liquidity Hunter AI V20.9.4 Chart Loaded"
+    "Liquidity Hunter AI V20.9.5 Chart Loaded"
 );
 
 // ==========================================
@@ -13,6 +13,15 @@ console.log(
 // ==========================================
 
 let jsLastCandleTime = null;
+
+let jsHistoricalLoaded = false;
+
+let jsLiveUpdateCount = 0;
+
+let jsRejectedStaleCount = 0;
+
+let jsInvalidUpdateCount = 0;
+
 
 // ==========================================
 // CHART
@@ -59,9 +68,28 @@ const chart =
                 secondsVisible: false
             },
 
-            autoSize: true
+            // ======================================
+            // IMPORTANT
+            //
+            // Explicit sizing is handled below.
+            // Do NOT use autoSize:true together with
+            // width/height updates.
+            // ======================================
+
+            autoSize: false,
+
+            width:
+                document.getElementById(
+                    "chart"
+                ).clientWidth,
+
+            height:
+                document.getElementById(
+                    "chart"
+                ).clientHeight
         }
     );
+
 
 // ==========================================
 // CANDLE SERIES
@@ -72,6 +100,7 @@ const candleSeries =
         LightweightCharts.CandlestickSeries,
         {}
     );
+
 
 // ==========================================
 // SIGNAL SERIES
@@ -93,6 +122,7 @@ const signalSeries =
         }
     );
 
+
 // ==========================================
 // TRADE MARKERS
 // ==========================================
@@ -105,6 +135,7 @@ const markerPlugin =
         []
     );
 
+
 // ==========================================
 // HISTORICAL DATA
 // ==========================================
@@ -115,13 +146,26 @@ window.setChartData = function(candles)
     {
         if (!Array.isArray(candles))
         {
+            console.warn(
+                "setChartData: invalid array"
+            );
+
             return "INVALID_DATA";
         }
 
         if (candles.length === 0)
         {
+            console.warn(
+                "setChartData: empty data"
+            );
+
             return "NO_DATA";
         }
+
+
+        // ======================================
+        // NORMALIZE
+        // ======================================
 
         const normalizedCandles = [];
 
@@ -129,6 +173,11 @@ window.setChartData = function(candles)
             const candle of candles
         )
         {
+            if (!candle)
+            {
+                continue;
+            }
+
             const time =
                 Number(candle.time);
 
@@ -144,6 +193,7 @@ window.setChartData = function(candles)
             const close =
                 Number(candle.close);
 
+
             if (
                 !Number.isFinite(time) ||
                 !Number.isFinite(open) ||
@@ -155,14 +205,31 @@ window.setChartData = function(candles)
                 continue;
             }
 
+
+            // ==================================
+            // Lightweight Charts expects
+            // Unix timestamp in SECONDS.
+            // ==================================
+
             normalizedCandles.push({
-                time: time,
-                open: open,
-                high: high,
-                low: low,
-                close: close
+
+                time:
+                    time,
+
+                open:
+                    open,
+
+                high:
+                    high,
+
+                low:
+                    low,
+
+                close:
+                    close
             });
         }
+
 
         if (
             normalizedCandles.length === 0
@@ -171,14 +238,20 @@ window.setChartData = function(candles)
             return "NO_VALID_DATA";
         }
 
+
+        // ======================================
+        // SORT
+        // ======================================
+
         normalizedCandles.sort(
             (a, b) =>
                 a.time - b.time
         );
 
-        // ------------------------------------------
-        // Remove duplicate timestamps
-        // ------------------------------------------
+
+        // ======================================
+        // REMOVE DUPLICATES
+        // ======================================
 
         const uniqueCandles = [];
 
@@ -200,23 +273,35 @@ window.setChartData = function(candles)
                 continue;
             }
 
-            uniqueCandles.push(candle);
+            uniqueCandles.push(
+                candle
+            );
 
             previousTime =
                 candle.time;
         }
 
-        // ------------------------------------------
-        // Set data
-        // ------------------------------------------
+
+        if (
+            uniqueCandles.length === 0
+        )
+        {
+            return "NO_VALID_DATA";
+        }
+
+
+        // ======================================
+        // SET HISTORICAL DATA
+        // ======================================
 
         candleSeries.setData(
             uniqueCandles
         );
 
-        // ------------------------------------------
-        // Register latest candle
-        // ------------------------------------------
+
+        // ======================================
+        // REGISTER LATEST HISTORICAL CANDLE
+        // ======================================
 
         const lastCandle =
             uniqueCandles[
@@ -224,15 +309,46 @@ window.setChartData = function(candles)
             ];
 
         jsLastCandleTime =
-            Number(lastCandle.time);
+            Number(
+                lastCandle.time
+            );
 
-        // ------------------------------------------
-        // Fit ONLY on historical load
-        // ------------------------------------------
+        jsHistoricalLoaded = true;
+
+
+        // ======================================
+        // RESET LIVE COUNTER
+        // ======================================
+
+        jsLiveUpdateCount = 0;
+
+        jsRejectedStaleCount = 0;
+
+        jsInvalidUpdateCount = 0;
+
+
+        // ======================================
+        // FIT ONLY AFTER HISTORICAL LOAD
+        //
+        // NEVER fitContent() during live updates.
+        // ======================================
 
         chart
             .timeScale()
             .fitContent();
+
+
+        console.log(
+            "Chart historical data loaded:",
+            uniqueCandles.length,
+            "candles"
+        );
+
+        console.log(
+            "Chart latest candle:",
+            jsLastCandleTime
+        );
+
 
         return "HISTORICAL_LOADED";
     }
@@ -247,12 +363,19 @@ window.setChartData = function(candles)
     }
 };
 
+
 // ==========================================
 // LIVE CANDLE UPDATE
 // ==========================================
 
 window.updateLastCandle = function(candle)
 {
+     console.log(
+        "[CHART JS UPDATE]",
+        candle.time,
+        candle.close
+    );
+    
     try
     {
         if (
@@ -260,10 +383,17 @@ window.updateLastCandle = function(candle)
             candle === undefined
         )
         {
+            jsInvalidUpdateCount++;
+
             return "INVALID_CANDLE";
         }
 
-        const incomingTime =
+
+        // ======================================
+        // NORMALIZE
+        // ======================================
+
+        let incomingTime =
             Number(candle.time);
 
         const open =
@@ -278,14 +408,26 @@ window.updateLastCandle = function(candle)
         const close =
             Number(candle.close);
 
+
+        // ======================================
+        // VALIDATE TIMESTAMP
+        // ======================================
+
         if (
             !Number.isFinite(
                 incomingTime
             )
         )
         {
+            jsInvalidUpdateCount++;
+
             return "INVALID_TIME";
         }
+
+
+        // ======================================
+        // VALIDATE OHLC
+        // ======================================
 
         if (
             !Number.isFinite(open) ||
@@ -294,12 +436,44 @@ window.updateLastCandle = function(candle)
             !Number.isFinite(close)
         )
         {
+            jsInvalidUpdateCount++;
+
             return "INVALID_OHLC";
         }
 
-        // ==========================================
+
+        // ======================================
+        // TIMESTAMP NORMALIZATION
+        //
+        // Defensive protection:
+        //
+        // If Python accidentally sends milliseconds,
+        // convert them to seconds.
+        // ======================================
+
+        if (
+            incomingTime >
+            10000000000
+        )
+        {
+            incomingTime =
+                Math.floor(
+                    incomingTime / 1000
+                );
+        }
+
+
+        // ======================================
         // STALE PROTECTION
-        // ==========================================
+        //
+        // IMPORTANT:
+        //
+        // Same timestamp = VALID.
+        //
+        // It means the current candle is changing.
+        //
+        // Older timestamp = reject.
+        // ======================================
 
         if (
             jsLastCandleTime !== null &&
@@ -307,14 +481,18 @@ window.updateLastCandle = function(candle)
             jsLastCandleTime
         )
         {
+            jsRejectedStaleCount++;
+
             return "STALE";
         }
 
-        // ==========================================
-        // UPDATE CHART
-        // ==========================================
 
-        candleSeries.update({
+        // ======================================
+        // BUILD CANDLE
+        // ======================================
+
+        const liveCandle = {
+
             time:
                 incomingTime,
 
@@ -329,14 +507,58 @@ window.updateLastCandle = function(candle)
 
             close:
                 close
-        });
+        };
 
-        // ==========================================
-        // REGISTER LATEST
-        // ==========================================
+
+        // ======================================
+        // UPDATE LIGHTWEIGHT CHARTS
+        //
+        // Same timestamp:
+        //     update current candle
+        //
+        // New timestamp:
+        //     create next candle
+        // ======================================
+
+        candleSeries.update(
+            liveCandle
+        );
+
+
+        // ======================================
+        // REGISTER LATEST TIMESTAMP
+        // ======================================
 
         jsLastCandleTime =
             incomingTime;
+
+
+        jsLiveUpdateCount++;
+
+
+        // ======================================
+        // LIGHT DEBUG
+        //
+        // Do not print every update.
+        //
+        // Print every 10th successful update.
+        // ======================================
+
+        if (
+            jsLiveUpdateCount % 10 === 0
+        )
+        {
+            console.log(
+                "[CHART LIVE]",
+                "updates:",
+                jsLiveUpdateCount,
+                "time:",
+                incomingTime,
+                "close:",
+                close
+            );
+        }
+
 
         return "UPDATED";
     }
@@ -351,6 +573,7 @@ window.updateLastCandle = function(candle)
     }
 };
 
+
 // ==========================================
 // TRADE SIGNAL
 // ==========================================
@@ -361,11 +584,13 @@ window.showTradeSignal = function(signal)
     {
         if (!signal)
         {
-            return;
+            return "INVALID_SIGNAL";
         }
+
 
         const signalTime =
             Number(signal.time);
+
 
         if (
             !Number.isFinite(
@@ -373,15 +598,27 @@ window.showTradeSignal = function(signal)
             )
         )
         {
-            return;
+            return "INVALID_TIME";
         }
+
 
         const direction =
             String(
                 signal.direction || ""
             ).toUpperCase();
 
+
+        if (
+            direction !== "BUY" &&
+            direction !== "SELL"
+        )
+        {
+            return "INVALID_DIRECTION";
+        }
+
+
         tradeMarkers.push({
+
             time:
                 signalTime,
 
@@ -404,18 +641,27 @@ window.showTradeSignal = function(signal)
                 direction
         });
 
-        // ------------------------------------------
-        // Sort markers
-        // ------------------------------------------
+
+        // ======================================
+        // SORT
+        // ======================================
 
         tradeMarkers.sort(
             (a, b) =>
                 a.time - b.time
         );
 
+
+        // ======================================
+        // UPDATE MARKERS
+        // ======================================
+
         markerPlugin.setMarkers(
             tradeMarkers
         );
+
+
+        return "SIGNAL_SHOWN";
     }
     catch(error)
     {
@@ -423,36 +669,155 @@ window.showTradeSignal = function(signal)
             "Trade overlay error:",
             error
         );
+
+        return "ERROR";
     }
 };
 
+
 // ==========================================
-// RESIZE
+// CHART RESIZE
+// ==========================================
+//
+// autoSize is intentionally FALSE.
+//
+// Explicit resize is handled here.
+//
+
+function resizeChart()
+{
+    try
+    {
+        const container =
+            document.getElementById(
+                "chart"
+            );
+
+        if (!container)
+        {
+            return;
+        }
+
+
+        const width =
+            container.clientWidth;
+
+        const height =
+            container.clientHeight;
+
+
+        if (
+            width <= 0 ||
+            height <= 0
+        )
+        {
+            return;
+        }
+
+
+        chart.applyOptions({
+
+            width:
+                width,
+
+            height:
+                height
+        });
+    }
+    catch(error)
+    {
+        console.error(
+            "Chart resize error:",
+            error
+        );
+    }
+}
+
+
+// ==========================================
+// WINDOW RESIZE
 // ==========================================
 
 window.addEventListener(
     "resize",
+    resizeChart
+);
+
+
+// ==========================================
+// RESIZE OBSERVER
+// ==========================================
+//
+// Useful inside QWebEngineView because the
+// actual chart container can resize without
+// a normal browser window resize.
+//
+
+if (
+    typeof ResizeObserver !==
+    "undefined"
+)
+{
+    const chartContainer =
+        document.getElementById(
+            "chart"
+        );
+
+    if (chartContainer)
+    {
+        const resizeObserver =
+            new ResizeObserver(
+                () =>
+                {
+                    resizeChart();
+                }
+            );
+
+        resizeObserver.observe(
+            chartContainer
+        );
+    }
+}
+
+
+// ==========================================
+// INITIAL RESIZE
+// ==========================================
+
+setTimeout(
     () =>
     {
-        try
-        {
-            chart.applyOptions({
-                width:
-                    window.innerWidth,
-
-                height:
-                    window.innerHeight
-            });
-        }
-        catch(error)
-        {
-            console.error(
-                "Chart resize error:",
-                error
-            );
-        }
-    }
+        resizeChart();
+    },
+    100
 );
+
+
+// ==========================================
+// DEBUG STATUS
+// ==========================================
+
+window.getChartSyncStatus = function()
+{
+    return {
+
+        historicalLoaded:
+            jsHistoricalLoaded,
+
+        lastCandleTime:
+            jsLastCandleTime,
+
+        liveUpdateCount:
+            jsLiveUpdateCount,
+
+        rejectedStaleCount:
+            jsRejectedStaleCount,
+
+        invalidUpdateCount:
+            jsInvalidUpdateCount
+    };
+};
+
 
 // ==========================================
 // READY
@@ -471,9 +836,29 @@ console.log(
 );
 
 console.log(
-    "GUI throttle       : 100ms"
+    "Same timestamp     : ACCEPTED"
+);
+
+console.log(
+    "Stale protection   : ENABLED"
 );
 
 console.log(
     "Chart reset        : PROTECTED"
+);
+
+console.log(
+    "AutoSize           : DISABLED"
+);
+
+console.log(
+    "Explicit resize    : ENABLED"
+);
+
+console.log(
+    "ResizeObserver     : ENABLED"
+);
+
+console.log(
+    "GUI throttle       : Controller/Widget"
 );
